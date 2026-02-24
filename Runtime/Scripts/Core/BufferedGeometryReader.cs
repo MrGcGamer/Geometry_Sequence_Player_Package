@@ -645,73 +645,79 @@ namespace BuildingVolumes.Player
       string path = Encoding.UTF8.GetString(pathCharBuffer);
       pathCharArray.Dispose();
 
-      ReadCommand readVerticesCmd;
-      ReadHandle readVerticesHandle;
-      readVerticesCmd.Offset = headerSize;
-      if (useCompression)
-        unsafe { readVerticesCmd.Buffer = vertexIntermediateBuffer.GetUnsafePtr(); }
-      else
-        unsafe { readVerticesCmd.Buffer = vertexBuffer.GetUnsafePtr(); }
-
-      //Size of the vertice positions
-      readVerticesCmd.Size = useCompression ? 3 * 2 : 3 * 4;
-      //Add vertex color size
-      if (geoType == GeometryType.Point)
-        readVerticesCmd.Size += useCompression ? 3 : 4;
-      if (hasUVs)
-        readVerticesCmd.Size += useCompression ? 2 * 2 : 2 * 4;
-      if (hasNormals)
-        readVerticesCmd.Size += useCompression? 3 * 2 : 3 * 4;
-
-      readVerticesCmd.Size *= vertexCount;
-
-      readCmd[0] = readVerticesCmd;
-
-      unsafe { readVerticesHandle = AsyncReadManager.Read(path, (ReadCommand*)readCmd.GetUnsafePtr(), 1); }
-
-      if (readVerticesHandle.IsValid())
+      try
       {
-        while (readVerticesHandle.Status == ReadStatus.InProgress)
+        ReadCommand readVerticesCmd;
+        ReadHandle readVerticesHandle;
+        readVerticesCmd.Offset = headerSize;
+        if (useCompression)
+          unsafe { readVerticesCmd.Buffer = vertexIntermediateBuffer.GetUnsafePtr(); }
+        else
+          unsafe { readVerticesCmd.Buffer = vertexBuffer.GetUnsafePtr(); }
+
+        //Size of the vertice positions
+        readVerticesCmd.Size = useCompression ? 3 * 2 : 3 * 4;
+        //Add vertex color size
+        if (geoType == GeometryType.Point)
+          readVerticesCmd.Size += useCompression ? 3 : 4;
+        if (hasUVs)
+          readVerticesCmd.Size += useCompression ? 2 * 2 : 2 * 4;
+        if (hasNormals)
+          readVerticesCmd.Size += useCompression? 3 * 2 : 3 * 4;
+
+        readVerticesCmd.Size *= vertexCount;
+
+        readCmd[0] = readVerticesCmd;
+
+        unsafe { readVerticesHandle = AsyncReadManager.Read(path, (ReadCommand*)readCmd.GetUnsafePtr(), 1); }
+
+        if (readVerticesHandle.IsValid())
         {
-          Thread.Sleep(1);
-        }
-      }
-
-      readVerticesHandle.Dispose();
-
-      if (geoType != GeometryType.Point)
-      {
-        //Reading the index is a bit more tricky because each index line contains the number of indices in that line, which we don't want to include
-        //So we first read it into a temporary array, and then copy only the indices
-
-        ReadCommand readIndicesCmd;
-        ReadHandle readIndicesHandle;
-        readIndicesCmd.Offset = headerSize + readVerticesCmd.Size;
-        readIndicesCmd.Size = (indiceCount * 4) + indiceCount;
-        unsafe { readIndicesCmd.Buffer = indiceIntermediateBuffer.GetUnsafePtr(); }
-        readCmd[0] = readIndicesCmd;
-        unsafe { readIndicesHandle = AsyncReadManager.Read(path, (ReadCommand*)readCmd.GetUnsafePtr(), 1); }
-
-        if (readIndicesHandle.IsValid())
-        {
-          while (readIndicesHandle.Status == ReadStatus.InProgress)
+          while (readVerticesHandle.Status == ReadStatus.InProgress)
           {
             Thread.Sleep(1);
           }
         }
 
-        readIndicesHandle.Dispose();
+        readVerticesHandle.Dispose();
 
-        int indiceTriplet = 3 * 4;
-
-        for (int i = 0; i < indiceCount / 3; i++)
+        if (geoType != GeometryType.Point)
         {
-          NativeArray<byte>.Copy(indiceIntermediateBuffer, (i * (indiceTriplet + 1)) + 1, indiceBuffer, i * indiceTriplet, indiceTriplet);
-        }
-      }
+          //Reading the index is a bit more tricky because each index line contains the number of indices in that line, which we don't want to include
+          //So we first read it into a temporary array, and then copy only the indices
 
-      readFinished = true;
-      readCmd.Dispose();
+          ReadCommand readIndicesCmd;
+          ReadHandle readIndicesHandle;
+          readIndicesCmd.Offset = headerSize + readVerticesCmd.Size;
+          readIndicesCmd.Size = (indiceCount * 4) + indiceCount;
+          unsafe { readIndicesCmd.Buffer = indiceIntermediateBuffer.GetUnsafePtr(); }
+          readCmd[0] = readIndicesCmd;
+          unsafe { readIndicesHandle = AsyncReadManager.Read(path, (ReadCommand*)readCmd.GetUnsafePtr(), 1); }
+
+          if (readIndicesHandle.IsValid())
+          {
+            while (readIndicesHandle.Status == ReadStatus.InProgress)
+            {
+              Thread.Sleep(1);
+            }
+          }
+
+          readIndicesHandle.Dispose();
+
+          int indiceTriplet = 3 * 4;
+
+          for (int i = 0; i < indiceCount / 3; i++)
+          {
+            NativeArray<byte>.Copy(indiceIntermediateBuffer, (i * (indiceTriplet + 1)) + 1, indiceBuffer, i * indiceTriplet, indiceTriplet);
+          }
+        }
+
+        readFinished = true;
+      }
+      finally
+      {
+        readCmd.Dispose();
+      }
     }
   }
 
@@ -735,35 +741,41 @@ namespace BuildingVolumes.Player
       string texturePath = Encoding.UTF8.GetString(texturePathCharBuffer);
       texturePathCharArray.Dispose();
 
-      int headerSize = 0;
-      if (format == SequenceConfiguration.TextureFormat.DDS)
-        headerSize = 128;
-      if (format == SequenceConfiguration.TextureFormat.ASTC)
-        headerSize = 16;
-
-      ReadCommand readTextureCmd;
-      ReadHandle readTextureHandle;
-      readTextureCmd.Offset = headerSize;
-      readTextureCmd.Size = textureSize;
-      unsafe { readTextureCmd.Buffer = textureRawData.GetUnsafePtr(); }
-
-
-      readCmd[0] = readTextureCmd;
-
-      unsafe { readTextureHandle = AsyncReadManager.Read(texturePath, (ReadCommand*)readCmd.GetUnsafePtr(), 1); }
-
-      if (readTextureHandle.IsValid())
+      try
       {
-        while (readTextureHandle.Status == ReadStatus.InProgress)
+        int headerSize = 0;
+        if (format == SequenceConfiguration.TextureFormat.DDS)
+          headerSize = 128;
+        if (format == SequenceConfiguration.TextureFormat.ASTC)
+          headerSize = 16;
+
+        ReadCommand readTextureCmd;
+        ReadHandle readTextureHandle;
+        readTextureCmd.Offset = headerSize;
+        readTextureCmd.Size = textureSize;
+        unsafe { readTextureCmd.Buffer = textureRawData.GetUnsafePtr(); }
+
+
+        readCmd[0] = readTextureCmd;
+
+        unsafe { readTextureHandle = AsyncReadManager.Read(texturePath, (ReadCommand*)readCmd.GetUnsafePtr(), 1); }
+
+        if (readTextureHandle.IsValid())
         {
-          Thread.Sleep(1);
+          while (readTextureHandle.Status == ReadStatus.InProgress)
+          {
+            Thread.Sleep(1);
+          }
         }
+
+        readTextureHandle.Dispose();
+
+        readFinished = true;
       }
-
-      readTextureHandle.Dispose();
-
-      readFinished = true;
-      readCmd.Dispose();
+      finally
+      {
+        readCmd.Dispose();
+      }
     }
   }
 
