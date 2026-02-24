@@ -631,10 +631,8 @@ namespace BuildingVolumes.Player
     [ReadOnly] public int maxIndiceCount;
     [ReadOnly] public GeometryType geoType;
 
-    [DeallocateOnJobCompletion]
     public NativeArray<byte> pathCharArray;
 
-    [DeallocateOnJobCompletion]
     public NativeArray<ReadCommand> readCmd;
 
     public void Execute()
@@ -645,6 +643,7 @@ namespace BuildingVolumes.Player
       byte[] pathCharBuffer = new byte[pathCharArray.Length];
       pathCharArray.CopyTo(pathCharBuffer);
       string path = Encoding.UTF8.GetString(pathCharBuffer);
+      pathCharArray.Dispose();
 
       ReadCommand readVerticesCmd;
       ReadHandle readVerticesHandle;
@@ -712,6 +711,7 @@ namespace BuildingVolumes.Player
       }
 
       readFinished = true;
+      readCmd.Dispose();
     }
   }
 
@@ -722,10 +722,8 @@ namespace BuildingVolumes.Player
     public bool readFinished;
     public SequenceConfiguration.TextureFormat format;
 
-    [DeallocateOnJobCompletion]
     public NativeArray<byte> texturePathCharArray;
 
-    [DeallocateOnJobCompletion]
     public NativeArray<ReadCommand> readCmd;
 
     public void Execute()
@@ -735,6 +733,7 @@ namespace BuildingVolumes.Player
       byte[] texturePathCharBuffer = new byte[texturePathCharArray.Length];
       texturePathCharArray.CopyTo(texturePathCharBuffer);
       string texturePath = Encoding.UTF8.GetString(texturePathCharBuffer);
+      texturePathCharArray.Dispose();
 
       int headerSize = 0;
       if (format == SequenceConfiguration.TextureFormat.DDS)
@@ -764,6 +763,7 @@ namespace BuildingVolumes.Player
       readTextureHandle.Dispose();
 
       readFinished = true;
+      readCmd.Dispose();
     }
   }
 

@@ -3,12 +3,11 @@
   "version": "1.2.3",
   "displayName": "Geometry Sequence Player",
   "description": "This package allows you to efficiently playback large geometry (pointcloud and mesh) sequences.",
-  "unity": "2022.1",
+  "unity": "6000.0",
   "documentationUrl": "https://buildingvolumes.github.io/Unity_Geometry_Sequence_Player/",
   "changelogUrl": "https://buildingvolumes.github.io/Unity_Geometry_Sequence_Player/docs/about/changelog/",
   "licensesUrl": "https://buildingvolumes.github.io/Unity_Geometry_Sequence_Player/docs/about/license-and-credits/",
   "dependencies": {
-    "com.unity.jobs": "0.70.0-preview.7",
     "com.unity.timeline": "1.6.4",
     "com.unity.mathematics": "1.2.1"
   },
