@@ -7,7 +7,8 @@
         "Unity.PolySpatial",
         "Unity.RenderPipelines.ShaderGraph.ShaderGraphLibrary",
         "Unity.Mathematics",
-        "Unity.Burst"
+        "Unity.Burst",
+        "Draco"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
@@ -26,6 +27,11 @@
             "name": "com.unity.polyspatial",
             "expression": "2.0.0-pre.9",
             "define": "INCLUDE_UNITY_POLYSPATIAL"
+        },
+        {
+            "name": "com.unity.cloud.draco",
+            "expression": "5.0.0",
+            "define": "DRACO_AVAILABLE"
         }
     ],
     "noEngineReferences": false

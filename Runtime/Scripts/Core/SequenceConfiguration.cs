@@ -10,6 +10,7 @@ namespace BuildingVolumes.Player
         public enum GeometryType { Point = 0, Mesh = 1, TexturedMesh = 2 };
         public enum TextureMode { None = 0, Single = 1, PerFrame = 2 };
         public enum TextureFormat { NotSupported = 0, DDS = 1, ASTC = 2 };
+        public enum CompressionMethod { None = 0, Quantized = 1, Draco = 2 };
 
         public string sequenceVersion;
         public GeometryType geometryType;
@@ -19,6 +20,7 @@ namespace BuildingVolumes.Player
         public bool hasUVs;
         public bool hasNormals = false;
         public bool useCompression = false;
+        public CompressionMethod compressionMethod = CompressionMethod.None;
         public int maxVertexCount;
         public int maxIndiceCount;
         public Vector3 boundsCenter;
@@ -70,6 +72,13 @@ namespace BuildingVolumes.Player
 
             CheckSequenceVersion(configuration.sequenceVersion, path);
 
+            //Back-compat: sequences created before compressionMethod existed only set the
+            //useCompression bool, which always meant the quantized codec. Keep both fields in sync.
+            if (configuration.compressionMethod == CompressionMethod.None && configuration.useCompression)
+                configuration.compressionMethod = CompressionMethod.Quantized;
+            //The quantized read/dequantize path must not run for Draco sequences
+            configuration.useCompression = configuration.compressionMethod == CompressionMethod.Quantized;
+
             return configuration;
         }
 
@@ -106,7 +115,7 @@ namespace BuildingVolumes.Player
                 return false;
             }
 
-            string packageVersion = "1.2.2";
+            string packageVersion = "1.3.0";
 
             if (new Version(sequenceVersion).CompareTo(new Version(packageVersion)) < 0)
             {

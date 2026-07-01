@@ -7,3 +7,4 @@ Contact_Information.patch.meta
 
 # development environments
 .vs
+.DS_Store

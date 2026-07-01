@@ -13,6 +13,16 @@ weight: 420
 toc: true
 ---
 
+### Version 1.3.0
+
+This version adds Draco-compressed pointcloud playback and a new lightweight pointcloud render path:
+
+- **Draco Compression:** Pointcloud sequences can now be played back from Draco-compressed `.drc` files. Draco frames are decoded asynchronously ahead of playback. Draco support is optional and feature-gated: install the `com.unity.cloud.draco` package via the Package Manager to enable it (the player works without it for non-Draco sequences).
+- **Draco Export:** The Converter tool can now export pointclouds to Draco `.drc` files (via DracoPy).
+- **Points Render Path:** A new "Points" pointcloud render path draws one vertex per point using `MeshTopology.Points`, without the billboard quad or compute pass used by the other paths. Draco sequences always use this points-based renderer.
+
+⬇️ Please also update the Geometry Sequence Player package to the newest version!
+
 ### Version 1.2.2
 
 This version contains several new features, contributed by [Anwar Lu](https://github.com/MrGcGamer):
@@ -52,7 +62,7 @@ This version focuses mostly on improvements of the pointcloud rendering ✨
 
 Fixed Issues:
 
-- Removed unnessesary, build breaking using reference from samples script  
+- Removed unnessesary, build breaking using reference from samples script
 
 ### Version 1.1.0
 

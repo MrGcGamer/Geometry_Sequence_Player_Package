@@ -69,7 +69,7 @@ namespace BuildingVolumes.Player
         float lastSequenceCompletionTime;
 
         public enum PathType { AbsolutePath, RelativeToDataPath, RelativeToPersistentDataPath, RelativeToStreamingAssets };
-        public enum PointcloudRenderPath { Shadergraph, Legacy, PolySpatial };
+        public enum PointcloudRenderPath { Shadergraph, Legacy, PolySpatial, Points };
         [Flags] public enum MaterialProperties { Albedo = 1, Emission = 2, Detail = 4 }
 
         private void Awake()
@@ -127,10 +127,26 @@ namespace BuildingVolumes.Player
 
             if (bufferedReader.totalFrames == 1)
             {
-                bufferedReader.SetupFrameForReading(bufferedReader.frameBuffer[0], bufferedReader.sequenceConfig, 0);
-                bufferedReader.ScheduleGeometryReadJob(bufferedReader.frameBuffer[0], bufferedReader.GetDeviceDependentTexturePath(0));
-                bufferedReader.frameBuffer[0].geoJobHandle.Complete();
-                ShowFrame(bufferedReader.frameBuffer[0]);
+                Frame singleFrame = bufferedReader.frameBuffer[0];
+
+#if DRACO_AVAILABLE
+                //Draco decodes asynchronously and cannot be completed synchronously here (the
+                //continuation needs the main thread, so blocking would deadlock). Schedule once,
+                //then show as soon as the decode is ready on a later UpdateFrame call.
+                if (bufferedReader.sequenceConfig.compressionMethod == SequenceConfiguration.CompressionMethod.Draco)
+                {
+                    if (singleFrame.bufferState == BufferState.Empty)
+                        bufferedReader.ScheduleFrame(singleFrame, 0);
+                    if (singleFrame.dracoReady)
+                        ShowFrame(singleFrame);
+                    return;
+                }
+#endif
+
+                bufferedReader.SetupFrameForReading(singleFrame, bufferedReader.sequenceConfig, 0);
+                bufferedReader.ScheduleGeometryReadJob(singleFrame, bufferedReader.GetDeviceDependentTexturePath(0));
+                singleFrame.geoJobHandle.Complete();
+                ShowFrame(singleFrame);
                 return;
             }
 
@@ -183,7 +199,7 @@ namespace BuildingVolumes.Player
                     lastFrameIndex = targetFrameIndex;
 
                     //Sometimes, the system might struggle to render a frame, or the application has a low framerate in general
-                    //For performance tracking, we need to decouple the application framerate from our stream framerate. 
+                    //For performance tracking, we need to decouple the application framerate from our stream framerate.
                     //If we are lagging behind due to render reasons, but have sucessfully buffered up to the current target frame
                     //we still hit our target time window and the stream is performing well
                     //Therefore we substract the dropped frames from our deltatime
@@ -238,31 +254,46 @@ namespace BuildingVolumes.Player
         {
             IPointCloudRenderer pcRenderer;
 
-#if !SHADERGRAPH_AVAILABLE
-            if (renderPath != PointcloudRenderPath.Legacy)
+#if DRACO_AVAILABLE
+            //Draco sequences must use the Draco renderer regardless of the selected render path -
+            //the codec is intrinsic to the files and the other paths can't consume .drc data.
+            if (reader.sequenceConfig.compressionMethod == SequenceConfiguration.CompressionMethod.Draco)
             {
-                Debug.LogWarning("Shadergraph package not available, falling back to legacy pointcloud sequence rendering");
-                renderPath = PointcloudRenderPath.Legacy;
+                pcRenderer = gameObject.AddComponent<DracoPointcloudRenderer>();
             }
+            else
+#endif
+            {
+#if !SHADERGRAPH_AVAILABLE
+                //Only the Shadergraph/PolySpatial paths require Shadergraph; Points/Legacy don't.
+                if (renderPath == PointcloudRenderPath.Shadergraph || renderPath == PointcloudRenderPath.PolySpatial)
+                {
+                    Debug.LogWarning("Shadergraph package not available, falling back to legacy pointcloud sequence rendering");
+                    renderPath = PointcloudRenderPath.Legacy;
+                }
 #endif
 
-            switch (renderPath)
-            {
-                case PointcloudRenderPath.Shadergraph:
-                    pcRenderer = gameObject.AddComponent<PointcloudRendererRT>();
-                    break;
-                case PointcloudRenderPath.Legacy:
-                    pcRenderer = gameObject.AddComponent<PointcloudRenderer>();
-                    break;
-                case PointcloudRenderPath.PolySpatial:
-                    pcRenderer = gameObject.AddComponent<PointcloudRendererRT_Meshlet>();
-                    break;
-                default:
-                    pcRenderer = gameObject.AddComponent<PointcloudRendererRT>();
-                    break;
+                switch (renderPath)
+                {
+                    case PointcloudRenderPath.Shadergraph:
+                        pcRenderer = gameObject.AddComponent<PointcloudRendererRT>();
+                        break;
+                    case PointcloudRenderPath.Legacy:
+                        pcRenderer = gameObject.AddComponent<PointcloudRenderer>();
+                        break;
+                    case PointcloudRenderPath.PolySpatial:
+                        pcRenderer = gameObject.AddComponent<PointcloudRendererRT_Meshlet>();
+                        break;
+                    case PointcloudRenderPath.Points:
+                        pcRenderer = gameObject.AddComponent<PointcloudRendererPoints>();
+                        break;
+                    default:
+                        pcRenderer = gameObject.AddComponent<PointcloudRendererRT>();
+                        break;
+                }
             }
 
-          (pcRenderer as Component).hideFlags = HideFlags.DontSave;
+            (pcRenderer as Component).hideFlags = HideFlags.DontSave;
             pcRenderer.Setup(reader.sequenceConfig, this.transform, pointSize, pointEmission, customMaterial, instantiateMaterial);
 
             return pcRenderer;
@@ -398,8 +429,18 @@ namespace BuildingVolumes.Player
         }
 
         Frame thumbnail = thumbnailReader.frameBuffer[0];
-        thumbnailReader.SetupFrameForReading(thumbnail, thumbnailReader.sequenceConfig, 0);
-        thumbnailReader.ScheduleGeometryReadJob(thumbnail, thumbnailReader.plyFilePaths[0]);
+
+#if DRACO_AVAILABLE
+        //Draco decodes asynchronously, so the thumbnail can't be produced synchronously here.
+        //Kick off the decode; the frame simply won't render a thumbnail this pass (no crash).
+        if (thumbnailReader.sequenceConfig.compressionMethod == SequenceConfiguration.CompressionMethod.Draco)
+          thumbnailReader.ScheduleFrame(thumbnail, 0);
+        else
+#endif
+        {
+          thumbnailReader.SetupFrameForReading(thumbnail, thumbnailReader.sequenceConfig, 0);
+          thumbnailReader.ScheduleGeometryReadJob(thumbnail, thumbnailReader.inputFilePaths[0]);
+        }
 
         if (thumbnailReader.sequenceConfig.geometryType == SequenceConfiguration.GeometryType.Point)
         {

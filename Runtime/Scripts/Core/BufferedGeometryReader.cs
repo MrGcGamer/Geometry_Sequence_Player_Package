@@ -13,6 +13,10 @@ using Unity.Collections.LowLevel.Unsafe;
 using System.Threading;
 using Unity.Mathematics;
 using Unity.Burst;
+#if DRACO_AVAILABLE
+using System.Threading.Tasks;
+using Draco;
+#endif
 
 namespace BuildingVolumes.Player
 {
@@ -33,6 +37,17 @@ namespace BuildingVolumes.Player
     public DecompressionJob decompressionJob;
     public JobHandle decompressionJobHandle;
 
+#if DRACO_AVAILABLE
+    //Draco decode path (see BufferedGeometryReader.DecodeDracoFrameAsync). Draco's decode is Task-based,
+    //so instead of a JobHandle we expose a flag that the buffer-state machine polls.
+    public Task dracoDecodeTask;
+    public Mesh.MeshDataArray dracoMeshData;
+    public bool dracoMeshDataValid;
+    public bool dracoDecodeSuccess;
+    public bool dracoReady;
+    public bool dracoDisposed;
+#endif
+
     public BufferState bufferState = BufferState.Empty;
     public int readBufferSize;
     public int playbackIndex;
@@ -47,7 +62,7 @@ namespace BuildingVolumes.Player
   {
     public string folder;
     public SequenceConfiguration sequenceConfig;
-    public string[] plyFilePaths;
+    public string[] inputFilePaths;
     public string[] texturesFilePathDDS;
     public string[] texturesFilePathASTC;
     public int bufferSize = 4;
@@ -61,7 +76,7 @@ namespace BuildingVolumes.Player
     private bool _buffering = true;
 
     /// <summary>
-    /// Create a new buffered reader. 
+    /// Create a new buffered reader.
     /// </summary>
     public BufferedGeometryReader()
     {
@@ -87,10 +102,22 @@ namespace BuildingVolumes.Player
       if (sequenceConfig == null)
         return false;
 
+#if !DRACO_AVAILABLE
+      if (sequenceConfig.compressionMethod == SequenceConfiguration.CompressionMethod.Draco)
+      {
+        Debug.LogError("This sequence uses Draco compression, but the Draco package (com.unity.cloud.draco) is not installed. " +
+            "Please install it via the Package Manager to play Draco sequences. Sequence: " + folderPath
+            + "\nAt the time of writing this: this package doesn't appear in the Package Manager search, but you can add it by name via the 'Install package by name' option. The package name is: com.unity.cloud.draco");
+        return false;
+      }
+#endif
+
+      string fileType = sequenceConfig.compressionMethod == SequenceConfiguration.CompressionMethod.Draco ? ".drc" : ".ply";
+
       try
       {
         //Add a temporary padding to the file list, as otherwise the file order will be messed up
-        plyFilePaths = new List<string>(Directory.GetFiles(folderPath, "*.ply")).OrderBy(file =>
+        inputFilePaths = new List<string>(Directory.GetFiles(folderPath, "*"+fileType)).OrderBy(file =>
         Regex.Replace(file, @"\d+", match => match.Value.PadLeft(9, '0'))).ToArray();
       }
 
@@ -100,15 +127,15 @@ namespace BuildingVolumes.Player
         return false;
       }
 
-      if (plyFilePaths.Length == 0)
+      if (inputFilePaths.Length == 0)
       {
-        Debug.LogError("No .ply files in the sequence directory: " + folderPath);
+        Debug.LogError("No " + fileType + " files in the sequence directory: " + folderPath);
         return false;
       }
 
-      if (plyFilePaths.Length != sequenceConfig.verticeCounts.Count)
+      if (inputFilePaths.Length != sequenceConfig.verticeCounts.Count)
       {
-        Debug.LogError("Could not find all required .ply files, make sure your sequence doesn't miss any!");
+        Debug.LogError("Could not find all required " + fileType + " files, make sure your sequence doesn't miss any!");
         return false;
       }
 
@@ -190,7 +217,7 @@ namespace BuildingVolumes.Player
       }
 
       bufferSize = frameBufferSize;
-      totalFrames = plyFilePaths.Length;
+      totalFrames = inputFilePaths.Length;
 
 
       if (bufferSize > totalFrames)
@@ -257,7 +284,7 @@ namespace BuildingVolumes.Player
       //Check if we have any free buffer space to buffer more frames
       foreach (Frame frame in frameBuffer)
       {
-        //Check if the buffer is ready to load the next frame 
+        //Check if the buffer is ready to load the next frame
         if (frame.bufferState is BufferState.Consumed or BufferState.Empty && framesToBuffer.Count > 0)
         {
           int newPlaybackIndex = framesToBuffer[0];
@@ -279,12 +306,92 @@ namespace BuildingVolumes.Player
 
     public void ScheduleFrame(Frame frame, int newPlaybackIndex)
     {
+#if DRACO_AVAILABLE
+      if (sequenceConfig.compressionMethod == SequenceConfiguration.CompressionMethod.Draco)
+      {
+        //A frame can be flipped back to Empty by DeletePastFrames while its decode is still
+        //running. Don't start a second concurrent decode (or repoint playbackIndex) on it -
+        //leave it alone and let the in-flight decode finish; it'll be rescheduled cleanly later.
+        if (frame.dracoDecodeTask != null && !frame.dracoDecodeTask.IsCompleted)
+          return;
+
+        SetupFrameForReading(frame, sequenceConfig, newPlaybackIndex);
+
+        //Fire-and-forget: DecodeDracoFrameAsync flips frame.dracoReady when done, which the buffer
+        //state machine (IsFrameBuffered) polls instead of a JobHandle.
+        frame.dracoDecodeTask = DecodeDracoFrameAsync(frame, inputFilePaths[newPlaybackIndex]);
+        return;
+      }
+#endif
+
       SetupFrameForReading(frame, sequenceConfig, newPlaybackIndex);
-      ScheduleGeometryReadJob(frame, plyFilePaths[newPlaybackIndex]);
+      ScheduleGeometryReadJob(frame, inputFilePaths[newPlaybackIndex]);
       if (sequenceConfig.textureMode == SequenceConfiguration.TextureMode.PerFrame)
         ScheduleTextureReadJob(frame, GetDeviceDependentTexturePath(newPlaybackIndex));
 
     }
+
+#if DRACO_AVAILABLE
+    /// <summary>
+    ///  Reads and Draco-decodes one frame; sets frame.dracoReady when done so the buffer state machine can pick it up.
+    /// </summary>
+    public async Task DecodeDracoFrameAsync(Frame frame, string drcPath)
+    {
+      frame.dracoReady = false;
+      frame.dracoDecodeSuccess = false;
+
+      Mesh.MeshDataArray meshData = default;
+      bool allocated = false;
+
+      try
+      {
+        byte[] encodedBytes = await File.ReadAllBytesAsync(drcPath);
+        if (frame.dracoDisposed)
+          return;
+
+        //Persistent because the array must outlive the decode await
+        using NativeArray<byte> encoded = new NativeArray<byte>(encodedBytes, Allocator.Persistent);
+        meshData = Mesh.AllocateWritableMeshData(1);
+        allocated = true;
+
+        DecodeResult result = await DracoDecoder.DecodeMesh(meshData[0], encoded.AsReadOnly());
+        frame.dracoDecodeSuccess = result.success;
+      }
+
+      catch (Exception e)
+      {
+        Debug.LogError("Draco decode failed for " + drcPath + ": " + e.Message);
+      }
+
+      //The reader was torn down while we were decoding - drop our local data and bail
+      if (frame.dracoDisposed)
+      {
+        if (allocated)
+          meshData.Dispose();
+        return;
+      }
+
+      //Drop any previously decoded-but-unapplied data still sitting in this ring-buffer slot
+      if (frame.dracoMeshDataValid)
+      {
+        frame.dracoMeshData.Dispose();
+        frame.dracoMeshDataValid = false;
+      }
+
+      if (allocated && frame.dracoDecodeSuccess)
+      {
+        frame.dracoMeshData = meshData;
+        frame.dracoMeshDataValid = true;
+      }
+
+      else if (allocated)
+      {
+        meshData.Dispose();
+      }
+
+      frame.dracoReady = true;
+    }
+#endif
 
     public void CheckFramesForCompletion()
     {
@@ -309,7 +416,22 @@ namespace BuildingVolumes.Player
       frame.textureJob = new ReadTextureJob();
       frame.decompressionJob = new DecompressionJob();
 
-      //Allocate every frame with the highest amount of vertices and indices being used in this sequence. 
+#if DRACO_AVAILABLE
+      //Draco frames don't use the .ply read/dequantize buffers at all - Draco decodes straight
+      //into a Mesh.MeshDataArray (see DecodeDracoFrameAsync). Allocate size-1 placeholders so the
+      //unconditional Dispose calls in DisposeFrameBuffer stay valid.
+      if (config.compressionMethod == SequenceConfiguration.CompressionMethod.Draco)
+      {
+        frame.vertexBufferRaw = new NativeArray<byte>(0, Allocator.Persistent);
+        frame.vertexIntermediateBuffer = new NativeArray<byte>(0, Allocator.Persistent);
+        frame.indiceBufferRaw = new NativeArray<byte>(0, Allocator.Persistent);
+        frame.indiceIntermediateBuffer = new NativeArray<byte>(0, Allocator.Persistent);
+        frame.textureBufferRaw = new NativeArray<byte>(0, Allocator.Persistent);
+        return;
+      }
+#endif
+
+      //Allocate every frame with the highest amount of vertices and indices being used in this sequence.
       //This way, we can re-use the meshArrays, instead of re-allocating them each frame
 
       //The vertex buffer that will be read by the GPU / Unitys Rendering system
@@ -325,7 +447,7 @@ namespace BuildingVolumes.Player
       //If we use compression, we use an intermediate buffer for the compressed data
       if (config.useCompression)
       {
-        int vertexIntermediateSizeBytes = 3 * 2; //3 vertex position float16 
+        int vertexIntermediateSizeBytes = 3 * 2; //3 vertex position float16
         if (config.hasNormals)
           vertexIntermediateSizeBytes += 3 * 2; //3 vertex normal float16
         if (config.hasUVs)
@@ -369,7 +491,7 @@ namespace BuildingVolumes.Player
     public void DeletePastFrames(int targetPlaybackIndex, int lastPlaybackIndex)
     {
       //We want to keep all frames in the buffer, which are one buffersize ahead of
-      //the target Frame, as these will be played soon. Outside of that range, all frames can be deleted 
+      //the target Frame, as these will be played soon. Outside of that range, all frames can be deleted
       int targetMaxFrame = targetPlaybackIndex + bufferSize;
       if (targetMaxFrame >= totalFrames)
         targetMaxFrame = targetMaxFrame % totalFrames;
@@ -437,7 +559,7 @@ namespace BuildingVolumes.Player
 
     /// <summary>
     /// Get the total amount of frames that are fully stored in buffer
-    /// After skipping or loading in a new sequence, it's useful to wait 
+    /// After skipping or loading in a new sequence, it's useful to wait
     /// until the buffer has stored at least a few frames
     /// </summary>
     /// <returns></returns>
@@ -461,6 +583,12 @@ namespace BuildingVolumes.Player
     /// <returns></returns>
     public bool IsFrameBuffered(Frame frame)
     {
+#if DRACO_AVAILABLE
+      //Draco decodes asynchronously without using Jobs; readiness is tracked by a flag
+      if (sequenceConfig.compressionMethod == SequenceConfiguration.CompressionMethod.Draco)
+        return frame.dracoReady;
+#endif
+
       if (frame.geoJobHandle.IsCompleted)
       {
         if (sequenceConfig.textureMode == SequenceConfiguration.TextureMode.PerFrame)
@@ -599,6 +727,17 @@ namespace BuildingVolumes.Player
       {
         foreach (Frame frame in frameBuffer)
         {
+#if DRACO_AVAILABLE
+          //Signal any in-flight Draco decode to drop its result when it resumes, and release any
+          //already-decoded mesh data. Safe for non-Draco frames (dracoMeshDataValid stays false).
+          frame.dracoDisposed = true;
+          if (frame.dracoMeshDataValid)
+          {
+            frame.dracoMeshData.Dispose();
+            frame.dracoMeshDataValid = false;
+          }
+#endif
+
           frame.geoJobHandle.Complete();
           frame.decompressionJobHandle.Complete();
           frame.vertexBufferRaw.Dispose();
@@ -641,7 +780,7 @@ namespace BuildingVolumes.Player
     {
       readFinished = false;
 
-      //We can't give Lists/strings to a job directly, so we need this workaround 
+      //We can't give Lists/strings to a job directly, so we need this workaround
       byte[] pathCharBuffer = new byte[pathCharArray.Length];
       pathCharArray.CopyTo(pathCharBuffer);
       string path = Encoding.UTF8.GetString(pathCharBuffer);
@@ -775,7 +914,7 @@ namespace BuildingVolumes.Player
     [ReadOnly] public bool hasNormals;
     [ReadOnly] public bool hasUVs;
     [ReadOnly] public bool hasVertexColors;
-    
+
     [ReadOnly] public NativeArray<byte> vertexIntermediateBuffer;
     [WriteOnly] public NativeArray<byte> vertexBuffer;
 
@@ -834,7 +973,7 @@ namespace BuildingVolumes.Player
 
       byte* dst = (byte*)vertexBuffer.GetUnsafePtr() + index*uncompressedVertexByteSize;
 
-      //Write position floats      
+      //Write position floats
       *(float*)(dst + 0) = x;
       *(float*)(dst + 4) = y;
       *(float*)(dst + 8) = z;
@@ -864,7 +1003,7 @@ namespace BuildingVolumes.Player
         *(float*)(dst + 0) = u;
         *(float*)(dst + 4) = v;
       }
-      
+
     }
   }
 }
