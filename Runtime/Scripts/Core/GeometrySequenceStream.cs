@@ -69,7 +69,7 @@ namespace BuildingVolumes.Player
         float lastSequenceCompletionTime;
 
         public enum PathType { AbsolutePath, RelativeToDataPath, RelativeToPersistentDataPath, RelativeToStreamingAssets };
-        public enum PointcloudRenderPath { Shadergraph, Legacy, PolySpatial, Points };
+        public enum PointcloudRenderPath { Shadergraph, Legacy, PolySpatial };
         [Flags] public enum MaterialProperties { Albedo = 1, Emission = 2, Detail = 4 }
 
         private void Awake()
@@ -254,43 +254,29 @@ namespace BuildingVolumes.Player
         {
             IPointCloudRenderer pcRenderer;
 
-#if DRACO_AVAILABLE
-            //Draco sequences must use the Draco renderer regardless of the selected render path -
-            //the codec is intrinsic to the files and the other paths can't consume .drc data.
-            if (reader.sequenceConfig.compressionMethod == SequenceConfiguration.CompressionMethod.Draco)
-            {
-                pcRenderer = gameObject.AddComponent<DracoPointcloudRenderer>();
-            }
-            else
-#endif
-            {
 #if !SHADERGRAPH_AVAILABLE
-                //Only the Shadergraph/PolySpatial paths require Shadergraph; Points/Legacy don't.
-                if (renderPath == PointcloudRenderPath.Shadergraph || renderPath == PointcloudRenderPath.PolySpatial)
-                {
-                    Debug.LogWarning("Shadergraph package not available, falling back to legacy pointcloud sequence rendering");
-                    renderPath = PointcloudRenderPath.Legacy;
-                }
+            //Only the Shadergraph/PolySpatial paths require Shadergraph; Legacy doesn't.
+            if (renderPath == PointcloudRenderPath.Shadergraph || renderPath == PointcloudRenderPath.PolySpatial)
+            {
+                Debug.LogWarning("Shadergraph package not available, falling back to legacy pointcloud sequence rendering");
+                renderPath = PointcloudRenderPath.Legacy;
+            }
 #endif
 
-                switch (renderPath)
-                {
-                    case PointcloudRenderPath.Shadergraph:
-                        pcRenderer = gameObject.AddComponent<PointcloudRendererRT>();
-                        break;
-                    case PointcloudRenderPath.Legacy:
-                        pcRenderer = gameObject.AddComponent<PointcloudRenderer>();
-                        break;
-                    case PointcloudRenderPath.PolySpatial:
-                        pcRenderer = gameObject.AddComponent<PointcloudRendererRT_Meshlet>();
-                        break;
-                    case PointcloudRenderPath.Points:
-                        pcRenderer = gameObject.AddComponent<PointcloudRendererPoints>();
-                        break;
-                    default:
-                        pcRenderer = gameObject.AddComponent<PointcloudRendererRT>();
-                        break;
-                }
+            switch (renderPath)
+            {
+                case PointcloudRenderPath.Shadergraph:
+                    pcRenderer = gameObject.AddComponent<PointcloudRendererRT>();
+                    break;
+                case PointcloudRenderPath.Legacy:
+                    pcRenderer = gameObject.AddComponent<PointcloudRenderer>();
+                    break;
+                case PointcloudRenderPath.PolySpatial:
+                    pcRenderer = gameObject.AddComponent<PointcloudRendererRT_Meshlet>();
+                    break;
+                default:
+                    pcRenderer = gameObject.AddComponent<PointcloudRendererRT>();
+                    break;
             }
 
             (pcRenderer as Component).hideFlags = HideFlags.DontSave;

@@ -39,13 +39,16 @@ namespace BuildingVolumes.Player
 
 #if DRACO_AVAILABLE
     //Draco decode path (see BufferedGeometryReader.DecodeDracoFrameAsync). Draco's decode is Task-based,
-    //so instead of a JobHandle we expose a flag that the buffer-state machine polls.
+    //so the buffer-state machine polls the dracoReady flag instead of a JobHandle. The decoded points are
+    //repacked into vertexBufferRaw/geoJob (via a Burst job on geoJobHandle), giving Draco frames the same
+    //interleaved-vertex contract as the .ply path so the standard pointcloud renderers can consume them.
     public Task dracoDecodeTask;
-    public Mesh.MeshDataArray dracoMeshData;
-    public bool dracoMeshDataValid;
-    public bool dracoDecodeSuccess;
     public bool dracoReady;
     public bool dracoDisposed;
+    //Reused scratch arrays for the decode->interleave repack, allocated once at maxVertexCount in
+    //AllocateFrame so we don't allocate per frame. Draco is pointcloud-only: positions + colors, no normals/UVs.
+    public NativeArray<Vector3> dracoPositions;
+    public NativeArray<Color32> dracoColors;
 #endif
 
     public BufferState bufferState = BufferState.Empty;
@@ -338,7 +341,7 @@ namespace BuildingVolumes.Player
     public async Task DecodeDracoFrameAsync(Frame frame, string drcPath)
     {
       frame.dracoReady = false;
-      frame.dracoDecodeSuccess = false;
+      bool decodeSuccess = false;
 
       Mesh.MeshDataArray meshData = default;
       bool allocated = false;
@@ -355,7 +358,7 @@ namespace BuildingVolumes.Player
         allocated = true;
 
         DecodeResult result = await DracoDecoder.DecodeMesh(meshData[0], encoded.AsReadOnly());
-        frame.dracoDecodeSuccess = result.success;
+        decodeSuccess = result.success;
       }
 
       catch (Exception e)
@@ -371,25 +374,68 @@ namespace BuildingVolumes.Player
         return;
       }
 
-      //Drop any previously decoded-but-unapplied data still sitting in this ring-buffer slot
-      if (frame.dracoMeshDataValid)
+      //Repack the decoded points into the interleaved vertex buffer (off the main thread via a Burst
+      //job on geoJobHandle), then release the decoded mesh data - the standard renderer reads geoJob.
+      if (allocated && decodeSuccess)
       {
-        frame.dracoMeshData.Dispose();
-        frame.dracoMeshDataValid = false;
-      }
-
-      if (allocated && frame.dracoDecodeSuccess)
-      {
-        frame.dracoMeshData = meshData;
-        frame.dracoMeshDataValid = true;
-      }
-
-      else if (allocated)
-      {
+        ScheduleDracoInterleave(frame, meshData[0]);
         meshData.Dispose();
+      }
+      else
+      {
+        if (allocated)
+          meshData.Dispose();
+        frame.geoJob.vertexCount = 0;
       }
 
       frame.dracoReady = true;
+    }
+
+    /// <summary>
+    /// Repacks a decoded Draco point frame into frame.vertexBufferRaw using the interleaved
+    /// layout (pos f32x3 + color RGBA8) the pointcloud renderers consume. Reads the decoded points
+    /// into the frame's reused scratch arrays, then runs the interleave as a Burst job stored on
+    /// frame.geoJobHandle (completed by the renderer's SetFrame). No per-frame allocations.
+    /// </summary>
+    void ScheduleDracoInterleave(Frame frame, Mesh.MeshData data)
+    {
+      //A reused ring-buffer slot might still have an interleave job in flight from a previous playback
+      //index; make sure it's done before we overwrite the shared scratch/vertex buffers.
+      frame.geoJobHandle.Complete();
+
+      int count = data.vertexCount;
+
+      //maxVertexCount from sequence.json sizes our buffers; a frame decoding more than that means the
+      //metadata is wrong. Drop the frame rather than write out of bounds.
+      if (count > frame.dracoPositions.Length)
+      {
+        Debug.LogError("Draco frame decoded " + count + " vertices but buffers only fit " +
+          frame.dracoPositions.Length + ". The sequence.json maxVertexCount is too small.");
+        frame.geoJob.vertexCount = 0;
+        return;
+      }
+
+      frame.geoJob.vertexCount = count;
+      if (count <= 0)
+        return;
+
+      //GetVertices/GetColors require the destination length to match the decoded vertex count exactly;
+      //use zero-copy sub-array views over the reused (maxVertexCount-sized) scratch arrays.
+      data.GetVertices(frame.dracoPositions.GetSubArray(0, count));
+
+      if (data.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Color))
+        data.GetColors(frame.dracoColors.GetSubArray(0, count));
+      else
+        unsafe { UnsafeUtility.MemSet(frame.dracoColors.GetUnsafePtr(), (byte)0xFF, (long)count * 4); } //opaque white fallback
+
+      DracoInterleaveJob job = new DracoInterleaveJob
+      {
+        positions = frame.dracoPositions,
+        colors = frame.dracoColors,
+        vertexBuffer = frame.vertexBufferRaw
+      };
+      frame.geoJobHandle = job.Schedule(count, 1024);
+      JobHandle.ScheduleBatchedJobs();
     }
 #endif
 
@@ -417,16 +463,23 @@ namespace BuildingVolumes.Player
       frame.decompressionJob = new DecompressionJob();
 
 #if DRACO_AVAILABLE
-      //Draco frames don't use the .ply read/dequantize buffers at all - Draco decodes straight
-      //into a Mesh.MeshDataArray (see DecodeDracoFrameAsync). Allocate size-1 placeholders so the
-      //unconditional Dispose calls in DisposeFrameBuffer stay valid.
+      //Draco decodes into a Mesh.MeshDataArray which DecodeDracoFrameAsync then repacks into this
+      //interleaved vertex buffer (same layout the .ply path produces), so the standard renderers can
+      //consume it. Draco is pointcloud-only with no normals/UVs, so the layout is fixed at
+      //pos f32x3 (12) + color RGBA8 (4) = 16 bytes. The dracoPositions/dracoColors scratch arrays are
+      //allocated once here and reused every frame by the repack. The index/quantize/texture buffers stay
+      //size-1 placeholders (Draco doesn't use them) so DisposeFrameBuffer's Dispose calls stay valid.
       if (config.compressionMethod == SequenceConfiguration.CompressionMethod.Draco)
       {
-        frame.vertexBufferRaw = new NativeArray<byte>(0, Allocator.Persistent);
+        frame.vertexBufferRaw = new NativeArray<byte>(config.maxVertexCount * 16, Allocator.Persistent);
+        frame.geoJob.vertexBuffer = frame.vertexBufferRaw;
+        frame.dracoPositions = new NativeArray<Vector3>(config.maxVertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+        frame.dracoColors = new NativeArray<Color32>(config.maxVertexCount, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+
         frame.vertexIntermediateBuffer = new NativeArray<byte>(0, Allocator.Persistent);
-        frame.indiceBufferRaw = new NativeArray<byte>(0, Allocator.Persistent);
-        frame.indiceIntermediateBuffer = new NativeArray<byte>(0, Allocator.Persistent);
-        frame.textureBufferRaw = new NativeArray<byte>(0, Allocator.Persistent);
+        frame.indiceBufferRaw = new NativeArray<byte>(1, Allocator.Persistent);
+        frame.indiceIntermediateBuffer = new NativeArray<byte>(1, Allocator.Persistent);
+        frame.textureBufferRaw = new NativeArray<byte>(1, Allocator.Persistent);
         return;
       }
 #endif
@@ -584,9 +637,10 @@ namespace BuildingVolumes.Player
     public bool IsFrameBuffered(Frame frame)
     {
 #if DRACO_AVAILABLE
-      //Draco decodes asynchronously without using Jobs; readiness is tracked by a flag
+      //Draco decodes asynchronously without using Jobs; readiness is tracked by dracoReady. The decode
+      //also schedules the interleave Burst job onto geoJobHandle, so wait for that too before showing.
       if (sequenceConfig.compressionMethod == SequenceConfiguration.CompressionMethod.Draco)
-        return frame.dracoReady;
+        return frame.dracoReady && frame.geoJobHandle.IsCompleted;
 #endif
 
       if (frame.geoJobHandle.IsCompleted)
@@ -728,18 +782,22 @@ namespace BuildingVolumes.Player
         foreach (Frame frame in frameBuffer)
         {
 #if DRACO_AVAILABLE
-          //Signal any in-flight Draco decode to drop its result when it resumes, and release any
-          //already-decoded mesh data. Safe for non-Draco frames (dracoMeshDataValid stays false).
+          //Signal any in-flight Draco decode to drop its result when it resumes. The interleave job (if
+          //one was scheduled) lives on geoJobHandle and is completed below before any buffers are disposed.
           frame.dracoDisposed = true;
-          if (frame.dracoMeshDataValid)
-          {
-            frame.dracoMeshData.Dispose();
-            frame.dracoMeshDataValid = false;
-          }
 #endif
 
           frame.geoJobHandle.Complete();
           frame.decompressionJobHandle.Complete();
+
+#if DRACO_AVAILABLE
+          //Dispose only after geoJobHandle.Complete() above - the interleave job reads these scratch arrays.
+          if (frame.dracoPositions.IsCreated)
+            frame.dracoPositions.Dispose();
+          if (frame.dracoColors.IsCreated)
+            frame.dracoColors.Dispose();
+#endif
+
           frame.vertexBufferRaw.Dispose();
           frame.vertexIntermediateBuffer.Dispose();
           frame.indiceBufferRaw.Dispose();
@@ -1006,4 +1064,38 @@ namespace BuildingVolumes.Player
 
     }
   }
+
+#if DRACO_AVAILABLE
+  /// <summary>
+  /// Interleaves separately-decoded Draco point attributes (positions + colors) into the interleaved
+  /// vertex buffer (pos f32x3 + color RGBA8, 16-byte stride) the pointcloud renderers consume.
+  /// The input arrays are frame-owned scratch buffers (reused across frames), so they are not deallocated
+  /// here. Only the first vertexCount entries are read; the arrays may be larger (sized at maxVertexCount).
+  /// </summary>
+  [BurstCompile]
+  public struct DracoInterleaveJob : IJobParallelFor
+  {
+    [ReadOnly] public NativeArray<Vector3> positions;
+    [ReadOnly] public NativeArray<Color32> colors;
+
+    //Written at per-index offsets via GetUnsafePtr, mirroring DecompressionJob.
+    [WriteOnly] public NativeArray<byte> vertexBuffer;
+
+    public unsafe void Execute(int index)
+    {
+      byte* dst = (byte*)vertexBuffer.GetUnsafePtr() + index * 16;
+
+      Vector3 p = positions[index];
+      *(float*)(dst + 0) = p.x;
+      *(float*)(dst + 4) = p.y;
+      *(float*)(dst + 8) = p.z;
+
+      Color32 c = colors[index];
+      *(dst + 12) = c.r;
+      *(dst + 13) = c.g;
+      *(dst + 14) = c.b;
+      *(dst + 15) = c.a;
+    }
+  }
+#endif
 }
