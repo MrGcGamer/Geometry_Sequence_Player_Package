@@ -69,7 +69,7 @@ namespace BuildingVolumes.Player
         float lastSequenceCompletionTime;
 
         public enum PathType { AbsolutePath, RelativeToDataPath, RelativeToPersistentDataPath, RelativeToStreamingAssets };
-        public enum PointcloudRenderPath { Shadergraph, Legacy, PolySpatial };
+        public enum PointcloudRenderPath { Shadergraph, Legacy, PolySpatial, ShadergraphMeshlet };
         [Flags] public enum MaterialProperties { Albedo = 1, Emission = 2, Detail = 4 }
 
         private void Awake()
@@ -256,7 +256,7 @@ namespace BuildingVolumes.Player
 
 #if !SHADERGRAPH_AVAILABLE
             //Only the Shadergraph/PolySpatial paths require Shadergraph; Legacy doesn't.
-            if (renderPath == PointcloudRenderPath.Shadergraph || renderPath == PointcloudRenderPath.PolySpatial)
+            if (renderPath == PointcloudRenderPath.Shadergraph || renderPath == PointcloudRenderPath.PolySpatial || renderPath == PointcloudRenderPath.ShadergraphMeshlet)
             {
                 Debug.LogWarning("Shadergraph package not available, falling back to legacy pointcloud sequence rendering");
                 renderPath = PointcloudRenderPath.Legacy;
@@ -273,6 +273,9 @@ namespace BuildingVolumes.Player
                     break;
                 case PointcloudRenderPath.PolySpatial:
                     pcRenderer = gameObject.AddComponent<PointcloudRendererRT_Meshlet>();
+                    break;
+                case PointcloudRenderPath.ShadergraphMeshlet:
+                    pcRenderer = gameObject.AddComponent<PointcloudRendererRT_MeshletSG>();
                     break;
                 default:
                     pcRenderer = gameObject.AddComponent<PointcloudRendererRT>();
