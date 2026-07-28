@@ -25,6 +25,14 @@ namespace BuildingVolumes.Player
     MeshFilter pcMeshFilter;
     MeshRenderer pcMeshRenderer;
 
+    //The quad mesh is allocated once for the whole sequence, but only the current frame's points
+    //are drawn. The sequence bounds are cached rather than read back off the mesh: SetSubMesh writes
+    //the same bounds it would be read from, so sourcing them there makes the value self-referential
+    //and one bad write - the empty submesh the first call installs - poisons it for the whole
+    //sequence. This copy comes from the sequence config and is never written from the mesh.
+    Bounds sequenceBounds;
+    int visiblePointCount = -1;
+
     Material currentPointcloudMaterial;
     float currentPointSize = 0;
     float currentPointEmission = 1;
@@ -195,16 +203,70 @@ namespace BuildingVolumes.Player
       //Important, as we often deal with more than 16000 triangles
       mesh.indexFormat = IndexFormat.UInt32;
 
+      sequenceBounds = config.GetBounds();
+
       mesh.vertices = vertices;
       mesh.triangles = indices;
       mesh.SetUVs(0, uvs);
-      mesh.bounds = config.GetBounds();
+      //Assigned after the vertices, which would otherwise derive bounds from the quad corners alone.
+      mesh.bounds = sequenceBounds;
       if (config.hasNormals)
         mesh.normals = normals;
 
       pcMeshFilter.sharedMesh = mesh;
 
+      //Nothing is drawn until the first frame arrives: the point data render textures hold stale
+      //data until then, and the opaque default material has no alpha clip to hide it.
+      SetVisiblePointCount(0);
+
       return pcObject;
+    }
+
+    /// <summary>
+    /// Restricts the draw to the points the current frame actually contains.
+    /// </summary>
+    /// <remarks>
+    /// The quad mesh is sized once for the sequence's maximum point count, so without this every
+    /// frame vertex-shades and rasterizes the unused tail as well - on a sequence whose point count
+    /// varies that is pure waste. It is also what makes an opaque, non-alpha-clipped point material
+    /// possible: the tail used to be hidden by the compute shader writing a zero alpha, which only
+    /// works if something later clips on it.
+    /// </remarks>
+    void SetVisiblePointCount(int pointCount)
+    {
+      //Checked before the property is touched: sharedMesh throws once the MeshFilter is destroyed.
+      if (pcMeshFilter == null || pcMeshFilter.sharedMesh == null)
+        return;
+
+      Mesh mesh = pcMeshFilter.sharedMesh;
+
+      //Clamped against the mesh rather than the sequence's maxVertexCount it was built from: the mesh
+      //is what the indices have to stay inside of.
+      pointCount = Mathf.Clamp(pointCount, 0, mesh.vertexCount / 4);
+
+      if (pointCount == visiblePointCount)
+        return;
+
+      visiblePointCount = pointCount;
+
+      SubMeshDescriptor subMesh = new SubMeshDescriptor(0, pointCount * 6, MeshTopology.Triangles)
+      {
+        firstVertex = 0,
+        vertexCount = pointCount * 4,
+        //Supplied explicitly because SetSubMesh replaces the submesh bounds, and the vertex positions
+        //are all zero-centered quad corners, so anything else collapses the culling volume.
+        bounds = sequenceBounds
+      };
+
+      //DontNotifyMeshUsers is deliberately not passed: it leaves the MeshRenderer on the bounds it
+      //cached when the vertices were assigned, which for this mesh is the 1x1x0 quad-corner box.
+      mesh.SetSubMesh(0, subMesh, MeshUpdateFlags.DontRecalculateBounds | MeshUpdateFlags.DontValidateIndices);
+      mesh.bounds = sequenceBounds;
+
+      //Set on the renderer as well, so culling and the editor's wireframe never depend on how mesh
+      //bounds propagate through SetSubMesh. localBounds overrides the mesh's bounds outright.
+      if (pcMeshRenderer)
+        pcMeshRenderer.localBounds = sequenceBounds;
     }
 
 
@@ -229,10 +291,16 @@ namespace BuildingVolumes.Player
       pointSourceBuffers[bufferIndex].UnlockBufferAfterWrite<byte>(frame.geoJob.vertexBuffer.Length);
       computeShaderRT.SetInt(pointCountID, frame.geoJob.vertexCount);
 
-      int groupSize = Mathf.CeilToInt(rtPositions.width / 32f);
+      SetVisiblePointCount(frame.geoJob.vertexCount);
+
+      //Only dispatch over the render texture rows this frame's points reach. The rows past them keep
+      //stale data, which is harmless because the draw is clamped to the same point count.
+      int usedRows = Mathf.CeilToInt(visiblePointCount / (float)rtResolution);
+      int groupSizeX = Mathf.CeilToInt(rtPositions.width / 32f);
+      int groupSizeY = Mathf.Max(1, Mathf.CeilToInt(usedRows / 32f));
       int kernel = frame.sequenceConfiguration.hasNormals ? 1 : 0;
       computeShaderRT.SetBuffer(kernel, pointSourceBufferID, pointSourceBuffers[bufferIndex]);
-      computeShaderRT.Dispatch(kernel, groupSize, groupSize, 1);
+      computeShaderRT.Dispatch(kernel, groupSizeX, groupSizeY, 1);
     }
 
 
@@ -309,17 +377,31 @@ namespace BuildingVolumes.Player
 
     public Material LoadDefaultMaterial(bool hasNormals)
     {
-      Material mat;
-
       if (hasNormals)
-        mat = new Material(Resources.Load("ShaderGraph/Pointcloud_Circles_Lit_Shadergraph", typeof(Material)) as Material);
-      else
-        mat = new Material(Resources.Load("ShaderGraph/Pointcloud_Circles_Shadergraph", typeof(Material)) as Material);
+      {
+        Material litMat = new Material(Resources.Load("ShaderGraph/Pointcloud_Circles_Lit_Shadergraph", typeof(Material)) as Material);
 
-      if (mat == null)
-        UnityEngine.Debug.LogError("Pointcloud Quads material (Polyspatial) could not be loaded!");
+        if (litMat == null)
+          UnityEngine.Debug.LogError("Pointcloud Circles Lit material could not be loaded!");
 
-      return mat;
+        return litMat;
+      }
+
+      //Opaque squares rather than alpha-clipped circles. A discard disables hidden surface removal on
+      //Apple's tile-based GPUs, so every point occluded by the front of the capture still gets shaded;
+      //dropping the clip hands that occlusion back to the hardware. This is the Quads graph with its
+      //alpha clip switched off - derived from the graph that works rather than reimplementing the
+      //billboard vertex logic by hand. Assign a circle material through
+      //GeometrySequenceStream.customMaterial to trade the occlusion win back for round points.
+      Material opaqueMat = Resources.Load("ShaderGraph/Pointcloud_Quads_Opaque_Shadergraph", typeof(Material)) as Material;
+
+      if (opaqueMat == null)
+      {
+        UnityEngine.Debug.LogError("Pointcloud Quads Opaque material could not be loaded, falling back to alpha-clipped circles!");
+        return new Material(Resources.Load("ShaderGraph/Pointcloud_Circles_Shadergraph", typeof(Material)) as Material);
+      }
+
+      return new Material(opaqueMat);
     }
 
     public void SetPointSize(float size)
@@ -358,8 +440,17 @@ namespace BuildingVolumes.Player
           pointSourceBuffers[i].Dispose();
       }
 
+      //Destroying pcObject only takes the MeshFilter with it, not the mesh it points at. The mesh is
+      //built per sequence and owned solely by this renderer, and at maxVertexCount * 4 vertices it is
+      //far too big to leave to the GC - in the editor ThumbnailLoadHelper re-runs Setup on every
+      //domain reload, so one is stranded per recompile.
+      if (pcMeshFilter != null && pcMeshFilter.sharedMesh != null)
+        DestroyImmediate(pcMeshFilter.sharedMesh);
+
       if (pcObject != null)
         DestroyImmediate(pcObject);
+
+      visiblePointCount = -1;
 
       isDisposed = true;
     }

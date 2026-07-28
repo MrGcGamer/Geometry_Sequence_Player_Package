@@ -151,8 +151,8 @@ Mesh:
       m_BitSize: 0
     m_UVInfo: 0
   m_LocalAABB:
-    m_Center: {x: 0.013500005, y: -0.27499998, z: 0.111999996}
-    m_Extent: {x: 0.3175, y: 0.619, z: 0.261}
+    m_Center: {x: -0.334, y: -0.22749999, z: 0.4135}
+    m_Extent: {x: 0.778, y: 0.6665, z: 0.5625}
   m_MeshUsageFlags: 0
   m_CookingOptions: 30
   m_BakedConvexCollisionMesh: 
