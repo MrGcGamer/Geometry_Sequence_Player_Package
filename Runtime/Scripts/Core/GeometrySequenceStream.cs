@@ -69,7 +69,9 @@ namespace BuildingVolumes.Player
         float lastSequenceCompletionTime;
 
         public enum PathType { AbsolutePath, RelativeToDataPath, RelativeToPersistentDataPath, RelativeToStreamingAssets };
-        public enum PointcloudRenderPath { Shadergraph, Legacy, PolySpatial, ShadergraphMeshlet };
+        //Points is appended rather than restored to its original slot 3: ShadergraphMeshlet took
+        //that value while the Points path was absent, and scenes serialize the enum by index.
+        public enum PointcloudRenderPath { Shadergraph, Legacy, PolySpatial, ShadergraphMeshlet, Points };
         [Flags] public enum MaterialProperties { Albedo = 1, Emission = 2, Detail = 4 }
 
         private void Awake()
@@ -276,6 +278,12 @@ namespace BuildingVolumes.Player
                     break;
                 case PointcloudRenderPath.ShadergraphMeshlet:
                     pcRenderer = gameObject.AddComponent<PointcloudRendererRT_MeshletSG>();
+                    break;
+                //One vertex per point, MeshTopology.Points, no billboard quad and no compute pass.
+                //Codec-agnostic: it consumes the interleaved vertex buffer, which is also what Draco
+                //frames are repacked into, so .drc sequences need no special case here.
+                case PointcloudRenderPath.Points:
+                    pcRenderer = gameObject.AddComponent<PointcloudRendererPoints>();
                     break;
                 default:
                     pcRenderer = gameObject.AddComponent<PointcloudRendererRT>();

@@ -9,7 +9,8 @@
 // renderers (Legacy/Shadergraph "Circle" paths). GPU point primitives rasterize as squares and
 // URP exposes no portable point-sprite coord ([[point_coord]]), so instead we reconstruct each
 // fragment's offset from the point's screen-space center via SV_POSITION (VPOS) and discard
-// fragments outside the point's pixel radius. This is portable across Metal/Vulkan/GL/D3D.
+// fragments outside the point's pixel radius. This is portable across Metal/Vulkan/GL/D3D, and
+// foveation-aware - see the fragment shader for why the centre is the side that gets remapped.
 Shader "Pointclouds/Pointcloud_Points"
 {
     Properties
@@ -33,7 +34,9 @@ Shader "Pointclouds/Pointcloud_Points"
             #pragma multi_compile_instancing
             #pragma multi_compile_fog
 
+            #include_with_pragmas "Packages/com.unity.render-pipelines.core/ShaderLibrary/FoveatedRenderingKeywords.hlsl"
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/FoveatedRendering.hlsl"
 
             struct Attributes
             {
@@ -107,10 +110,19 @@ Shader "Pointclouds/Pointcloud_Points"
                 // pixel position (VPOS); centerSP/centerSP.w is the point center in [0,1] screen UV.
                 // Skip the test for ~1px points where a circle is indistinguishable from a square
                 // and the discard would just thin the cloud.
+                //
+                // The centre is remapped forward into the rasterisation-rate map's space rather than
+                // VPOS being remapped back out of it. Both directions were measured on Apple Vision
+                // Pro: remapping the per-fragment value collapses the offset to zero and nothing is
+                // ever discarded (square points), and comparing across the two spaces untouched makes
+                // the offset large enough that everything is discarded (the cloud vanishes as you
+                // approach). Only the centre may cross. The radius stays in the rasterizer's own
+                // space deliberately: PSIZE fed it the same figure, so the circle inscribes the
+                // square footprint exactly whatever the local rate happens to be.
                 if (IN.pixelRadius > 0.75)
                 {
-                    float2 centerUV = IN.centerSP.xy / IN.centerSP.w;
-                    float2 offsetPix = (IN.positionCS.xy / _ScreenParams.xy - centerUV) * _ScreenParams.xy;
+                    float2 centerRaster = FoveatedRemapLinearToNonUniform(IN.centerSP.xy / IN.centerSP.w);
+                    float2 offsetPix = (IN.positionCS.xy / _ScreenParams.xy - centerRaster) * _ScreenParams.xy;
                     if (dot(offsetPix, offsetPix) > IN.pixelRadius * IN.pixelRadius)
                         discard;
                 }
