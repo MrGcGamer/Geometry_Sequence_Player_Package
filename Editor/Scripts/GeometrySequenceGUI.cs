@@ -87,7 +87,7 @@ namespace BuildingVolumes.Player
 
             if (Directory.Exists(path))
             {
-              if (Directory.GetFiles(path, "*.ply").Length > 0)
+              if (BufferedGeometryReader.ContainsGeometryFiles(path))
               {
                 if (File.Exists(path + "/sequence.json"))
                 {

@@ -89,7 +89,7 @@ namespace BuildingVolumes.Player
         //+++++++++++++++++++++ PLAYBACK API ++++++++++++++++++++++++
 
         /// <summary>
-        /// Load a .ply sequence (and optionally textures) from the given path, and starts playback if autoplay is enabled.
+        /// Load a .ply or Draco (.drc) sequence (and optionally textures) from the given path, and starts playback if autoplay is enabled.
         /// Returns false when sequence could not be loaded, see Unity Console output for details in this case.
         /// </summary>
         /// <param name="path">The path to the sequence</param>

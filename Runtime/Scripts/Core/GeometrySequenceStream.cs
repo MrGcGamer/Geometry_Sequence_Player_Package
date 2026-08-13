@@ -91,7 +91,7 @@ namespace BuildingVolumes.Player
         /// <summary>
         /// Cleans up the current sequence and prepares the playback of the sequence in the given folder. Doesn't start playback!
         /// </summary>
-        /// <param name="absolutePathToSequence">The absolute path to the folder containing a sequence of .ply geometry files and optionally .dds texture files</param>
+        /// <param name="absolutePathToSequence">The absolute path to the folder containing a sequence of .ply (or, for Draco sequences, .drc) geometry files and optionally .dds texture files</param>
         public bool ChangeSequence(string absolutePathToSequence, float playbackFPS)
         {
             Dispose();
@@ -139,14 +139,17 @@ namespace BuildingVolumes.Player
                 {
                     if (singleFrame.bufferState == BufferState.Empty)
                         bufferedReader.ScheduleFrame(singleFrame, 0);
-                    if (singleFrame.dracoReady)
+                    if (singleFrame.dracoReady && singleFrame.bufferState != BufferState.Playing)
+                    {
                         ShowFrame(singleFrame);
+                        singleFrame.bufferState = BufferState.Playing;
+                    }
                     return;
                 }
 #endif
 
                 bufferedReader.SetupFrameForReading(singleFrame, bufferedReader.sequenceConfig, 0);
-                bufferedReader.ScheduleGeometryReadJob(singleFrame, bufferedReader.GetDeviceDependentTexturePath(0));
+                bufferedReader.ScheduleGeometryReadJob(singleFrame, bufferedReader.inputFilePaths[0]);
                 singleFrame.geoJobHandle.Complete();
                 ShowFrame(singleFrame);
                 return;
@@ -378,6 +381,10 @@ namespace BuildingVolumes.Player
 
         public void Dispose()
         {
+#if UNITY_EDITOR && DRACO_AVAILABLE
+            StopDracoThumbnailPoll();
+#endif
+
             pointcloudRenderer?.Dispose();
             meshSequenceRenderer?.Dispose();
 
@@ -428,10 +435,15 @@ namespace BuildingVolumes.Player
         Frame thumbnail = thumbnailReader.frameBuffer[0];
 
 #if DRACO_AVAILABLE
-        //Draco decodes asynchronously, so the thumbnail can't be produced synchronously here.
-        //Kick off the decode; the frame simply won't render a thumbnail this pass (no crash).
+        bool waitingForDracoDecode = false;
+
+        //Draco decodes off the main thread, so the frame holds no points yet when the renderer is set up
+        //below. Kick off the decode and push the frame in from the editor update loop once it lands.
         if (thumbnailReader.sequenceConfig.compressionMethod == SequenceConfiguration.CompressionMethod.Draco)
+        {
           thumbnailReader.ScheduleFrame(thumbnail, 0);
+          waitingForDracoDecode = true;
+        }
         else
 #endif
         {
@@ -442,7 +454,13 @@ namespace BuildingVolumes.Player
         if (thumbnailReader.sequenceConfig.geometryType == SequenceConfiguration.GeometryType.Point)
         {
           thumbnailPCRenderer = SetupPointcloudRenderer(thumbnailReader, pointRenderPath);
-          thumbnailPCRenderer?.SetFrame(thumbnailReader.frameBuffer[0]);
+
+#if DRACO_AVAILABLE
+          if (waitingForDracoDecode)
+            PollForDracoThumbnail(thumbnail);
+          else
+#endif
+            thumbnailPCRenderer?.SetFrame(thumbnail);
         }
 
         else
@@ -459,11 +477,62 @@ namespace BuildingVolumes.Player
       }
     }
 
+#if DRACO_AVAILABLE
+    EditorApplication.CallbackFunction dracoThumbnailPoll;
+
+    /// <summary>
+    /// Shows the thumbnail frame once its Draco decode has finished. The decode is a Task, so it can't
+    /// be waited on here without deadlocking the main thread - we poll the frame from the editor's
+    /// update loop instead, the same way the runtime buffer state machine polls dracoReady.
+    /// </summary>
+    void PollForDracoThumbnail(Frame thumbnail)
+    {
+      StopDracoThumbnailPoll();
+
+      dracoThumbnailPoll = () =>
+      {
+        //Cleared, or the scene closed, while the decode was still running
+        if (thumbnailReader == null || thumbnailReader.frameBuffer == null)
+        {
+          StopDracoThumbnailPoll();
+          return;
+        }
+
+        if (!thumbnail.dracoReady)
+          return;
+
+        StopDracoThumbnailPoll();
+
+        thumbnailPCRenderer?.SetFrame(thumbnail);
+
+        //Nothing else marks the scene dirty at this point, so without this the thumbnail would only
+        //appear once the user next moves the mouse over a scene view.
+        SceneView.RepaintAll();
+      };
+
+      EditorApplication.update += dracoThumbnailPoll;
+    }
+
+    void StopDracoThumbnailPoll()
+    {
+      if (dracoThumbnailPoll == null)
+        return;
+
+      EditorApplication.update -= dracoThumbnailPoll;
+      dracoThumbnailPoll = null;
+    }
+#endif
+
     /// <summary>
     /// Removes the shown Thumbnail, so that it doesn't stick around in the scene or get saved
     /// </summary>
     public void ClearEditorThumbnail()
     {
+#if DRACO_AVAILABLE
+      //Must run before the buffers are disposed: the callback reads the frame we are about to free
+      StopDracoThumbnailPoll();
+#endif
+
       thumbnailReader?.DisposeFrameBuffer(true);
       thumbnailMeshRenderer?.Dispose();
       thumbnailPCRenderer?.Dispose();

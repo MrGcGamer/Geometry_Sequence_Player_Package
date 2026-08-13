@@ -92,9 +92,27 @@ namespace BuildingVolumes.Player
     }
 
     /// <summary>
+    /// The file extension of the geometry container a sequence uses: Draco sequences store their frames
+    /// as .drc files, every other compression method stores them as .ply.
+    /// </summary>
+    public static string GetGeometryFileExtension(SequenceConfiguration config)
+    {
+      return config.compressionMethod == SequenceConfiguration.CompressionMethod.Draco ? ".drc" : ".ply";
+    }
+
+    /// <summary>
+    /// Does this folder hold geometry files of any supported container? For callers that need to validate
+    /// a folder before a SequenceConfiguration has been loaded, such as the editor's sequence pickers.
+    /// </summary>
+    public static bool ContainsGeometryFiles(string folderPath)
+    {
+      return Directory.EnumerateFiles(folderPath, "*.ply").Any() || Directory.EnumerateFiles(folderPath, "*.drc").Any();
+    }
+
+    /// <summary>
     /// Use this function to set up a new buffered Reader.
     /// </summary>
-    /// <param name="folderPath">A path to a folder containing .ply geometry files and optionally .dds texture files</param>
+    /// <param name="folderPath">A path to a folder containing .ply (or, for Draco sequences, .drc) geometry files and optionally .dds texture files</param>
     /// <param name="frameBufferSize">Number of frames to buffer</param>
     /// <returns>Returns true on success, false when any errors have occured during setup</returns>
     public bool SetupReader(string folderPath, int frameBufferSize)
@@ -115,7 +133,27 @@ namespace BuildingVolumes.Player
       }
 #endif
 
-      string fileType = sequenceConfig.compressionMethod == SequenceConfiguration.CompressionMethod.Draco ? ".drc" : ".ply";
+      if (sequenceConfig.compressionMethod == SequenceConfiguration.CompressionMethod.Draco)
+      {
+        //The Draco path decodes into the pointcloud vertex layout and leaves the indice buffers as
+        //size-1 placeholders, so a mesh sequence would render from buffers that are never filled.
+        if (sequenceConfig.geometryType != GeometryType.Point)
+        {
+          Debug.LogError("Draco compression is only supported for pointcloud sequences, but this sequence contains meshes. Sequence: " + folderPath);
+          return false;
+        }
+
+        //DracoInterleaveJob writes positions and colors only. Leaving these set would make the renderers
+        //read the vertex buffer at a wider stride than the decode actually writes.
+        if (sequenceConfig.hasNormals || sequenceConfig.hasUVs)
+        {
+          Debug.LogWarning("Draco sequences are decoded to positions and colors only, but the metadata of this sequence declares normals or UVs. They will be ignored. Sequence: " + folderPath);
+          sequenceConfig.hasNormals = false;
+          sequenceConfig.hasUVs = false;
+        }
+      }
+
+      string fileType = GetGeometryFileExtension(sequenceConfig);
 
       try
       {
@@ -704,7 +742,8 @@ namespace BuildingVolumes.Player
 
     /// <summary>
     /// Schedules a Job that reads a .ply Pointcloud or mesh file from disk
-    /// and loads it into memory.
+    /// and loads it into memory. Draco frames do not pass through here - they are read and decoded
+    /// by DecodeDracoFrameAsync instead.
     /// </summary>
     /// <param name="frame">The frame into which to load the data. The mesh data array needs to be initialized already</param>
     /// <param name="plyPath">The absolute path to the .ply file </param>
