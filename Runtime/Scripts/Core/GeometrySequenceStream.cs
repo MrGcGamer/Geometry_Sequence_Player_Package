@@ -41,6 +41,16 @@ namespace BuildingVolumes.Player
         public float pointSize = 0.02f;
         public float pointEmission = 1f;
 
+        // Sequences are authored around sequence.json's boundsCenter, not the origin, so content may sit
+        // off this GameObject's pivot and rotate/scale around a point outside it. When enabled, renderers
+        // are parented to a child shifted by -boundsCenter so content aligns with this transform's origin.
+        // Disable to preserve the original authored offset in existing scenes.
+        public bool centerContentOnOrigin = true;
+
+        //Owned here rather than by the renderers, because it must be identical for the playback and
+        //thumbnail renderers and outlives neither of them alone.
+        Transform contentRoot;
+
         //Mesh and pointcloud rendering
         [HideInInspector]
         public BufferedGeometryReader bufferedReader;
@@ -255,6 +265,62 @@ namespace BuildingVolumes.Player
             frame.finishedBufferingTime = 0;
         }
 
+        /// <summary>
+        /// The transform every renderer parents its stream object to. Carries the offset that puts the
+        /// sequence's content on this GameObject's origin, so no render path has to know about it.
+        /// </summary>
+        Transform GetContentRoot(SequenceConfiguration config)
+        {
+            if (contentRoot == null)
+            {
+                GameObject rootObject = new GameObject("Geometry Sequence Content");
+                rootObject.hideFlags = HideFlags.DontSave;
+                rootObject.transform.parent = this.transform;
+                rootObject.transform.localRotation = Quaternion.identity;
+                rootObject.transform.localScale = Vector3.one;
+                contentRoot = rootObject.transform;
+            }
+
+            contentRoot.localPosition = ContentOffset(config);
+
+            return contentRoot;
+        }
+
+        //Position only: the legacy path builds its camera-facing quads from the renderer's own
+        //transform.rotation, so a rotated or scaled content root would silently break it.
+        Vector3 ContentOffset(SequenceConfiguration config)
+        {
+            return centerContentOnOrigin ? -config.GetBounds().center : Vector3.zero;
+        }
+
+        /// <summary>
+        /// Re-applies centerContentOnOrigin to a content root that already exists, so toggling the flag
+        /// moves the visible sequence straight away instead of waiting for the next ChangeSequence.
+        /// </summary>
+        public void RefreshContentPlacement()
+        {
+            SequenceConfiguration config = bufferedReader?.sequenceConfig ?? thumbnailReader?.sequenceConfig;
+
+            if (contentRoot == null || config == null)
+                return;
+
+            contentRoot.localPosition = ContentOffset(config);
+        }
+
+        /// <summary>
+        /// Destroys the content root once the last renderer has torn its stream object down. Playback and
+        /// thumbnail renderers share the root and are disposed by different paths, so ownership is decided
+        /// by what is left under it rather than by which caller ran.
+        /// </summary>
+        void ReleaseContentRootIfEmpty()
+        {
+            if (contentRoot == null || contentRoot.childCount > 0)
+                return;
+
+            DestroyImmediate(contentRoot.gameObject);
+            contentRoot = null;
+        }
+
         public IPointCloudRenderer SetupPointcloudRenderer(BufferedGeometryReader reader, PointcloudRenderPath renderPath)
         {
             IPointCloudRenderer pcRenderer;
@@ -282,9 +348,6 @@ namespace BuildingVolumes.Player
                 case PointcloudRenderPath.ShadergraphMeshlet:
                     pcRenderer = gameObject.AddComponent<PointcloudRendererRT_MeshletSG>();
                     break;
-                //One vertex per point, MeshTopology.Points, no billboard quad and no compute pass.
-                //Codec-agnostic: it consumes the interleaved vertex buffer, which is also what Draco
-                //frames are repacked into, so .drc sequences need no special case here.
                 case PointcloudRenderPath.Points:
                     pcRenderer = gameObject.AddComponent<PointcloudRendererPoints>();
                     break;
@@ -294,7 +357,7 @@ namespace BuildingVolumes.Player
             }
 
             (pcRenderer as Component).hideFlags = HideFlags.DontSave;
-            pcRenderer.Setup(reader.sequenceConfig, this.transform, pointSize, pointEmission, customMaterial, instantiateMaterial);
+            pcRenderer.Setup(reader.sequenceConfig, GetContentRoot(reader.sequenceConfig), pointSize, pointEmission, customMaterial, instantiateMaterial);
 
             return pcRenderer;
         }
@@ -317,7 +380,7 @@ namespace BuildingVolumes.Player
                 msRenderer = gameObject.AddComponent<MeshSequenceRenderer>();
 
             (msRenderer as Component).hideFlags = HideFlags.HideAndDontSave;
-            msRenderer.Setup(this.transform, reader.sequenceConfig);
+            msRenderer.Setup(GetContentRoot(reader.sequenceConfig), reader.sequenceConfig);
 
             if (customMaterial != null)
                 msRenderer.ChangeMaterial(customMaterial, instantiateMaterial);
@@ -393,6 +456,8 @@ namespace BuildingVolumes.Player
 
             bufferedReader?.DisposeFrameBuffer(true);
             readerInitialized = false;
+
+            ReleaseContentRootIfEmpty();
         }
 
         [ExecuteInEditMode]
@@ -541,6 +606,8 @@ namespace BuildingVolumes.Player
         DestroyImmediate(thumbnailMeshRenderer as UnityEngine.Object);
       if (thumbnailPCRenderer != null)
         DestroyImmediate(thumbnailPCRenderer as UnityEngine.Object);
+
+      ReleaseContentRootIfEmpty();
     }
 #endif
         #endregion

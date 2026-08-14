@@ -19,6 +19,7 @@ namespace BuildingVolumes.Player
     SerializedProperty pointSize;
     SerializedProperty pointEmission;
     SerializedProperty pointSystem;
+    SerializedProperty centerContentOnOrigin;
 
     SerializedProperty bufferSize;
     SerializedProperty useAllThreads;
@@ -48,6 +49,7 @@ namespace BuildingVolumes.Player
       pointSize = serializedObject.FindProperty("pointSize");
       pointEmission = serializedObject.FindProperty("pointEmission");
       pointSystem = serializedObject.FindProperty("pointRenderPath");
+      centerContentOnOrigin = serializedObject.FindProperty("centerContentOnOrigin");
 
       bufferSize = serializedObject.FindProperty("bufferSize");
       useAllThreads = serializedObject.FindProperty("useAllThreads");
@@ -82,6 +84,18 @@ namespace BuildingVolumes.Player
         instantiateMaterial.boolValue = true;
 
       updateMaterial = EditorGUI.EndChangeCheck();
+
+      GUILayout.Space(10);
+
+      GUILayout.Label("Placement", EditorStyles.boldLabel);
+
+      EditorGUI.BeginChangeCheck();
+      EditorGUILayout.PropertyField(centerContentOnOrigin, new GUIContent("Center content on origin", "Shifts the sequence by -boundsCenter so its content sits on this transform's pivot. Untick to keep the placement authored into the sequence."));
+      if (EditorGUI.EndChangeCheck())
+      {
+        serializedObject.ApplyModifiedProperties();
+        stream.RefreshContentPlacement();
+      }
 
       GUILayout.Space(10);
 
