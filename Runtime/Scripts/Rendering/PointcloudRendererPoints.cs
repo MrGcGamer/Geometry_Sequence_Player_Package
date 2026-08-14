@@ -10,7 +10,6 @@ namespace BuildingVolumes.Player
   /// </summary>
   public class PointcloudRendererPoints : PointcloudPointsRendererBase
   {
-    int byteStride;
     int pointSourceCount;
     int lastBufferUpdateFrame = -1;
 
@@ -18,8 +17,6 @@ namespace BuildingVolumes.Player
 
     protected override void ConfigureMesh(SequenceConfiguration config)
     {
-      byteStride = config.hasNormals ? 4 * 7 : 4 * 4; //pos(12)[+normal(12)]+color(4)
-
       VertexAttributeDescriptor vp = new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3);
       VertexAttributeDescriptor vn = new VertexAttributeDescriptor(VertexAttribute.Normal, VertexAttributeFormat.Float32, 3);
       VertexAttributeDescriptor vc = new VertexAttributeDescriptor(VertexAttribute.Color, VertexAttributeFormat.UNorm8, 4);
@@ -43,19 +40,17 @@ namespace BuildingVolumes.Player
 
     public override void SetFrame(Frame frame)
     {
-      if (!buffersInitialized || isDisposed)
+      if (!ready || isDisposed)
         return;
       if (lastBufferUpdateFrame == Time.frameCount)
         return;
 
-      frame.geoJobHandle.Complete();
-      if (configuration.useCompression)
-        frame.decompressionJobHandle.Complete();
+      CompleteFrameJobs(frame);
 
       pointSourceCount = frame.geoJob.vertexCount;
 
       //Upload only the used portion of the interleaved buffer, then draw it as points
-      pcMesh.SetVertexBufferData(frame.vertexBufferRaw, 0, 0, pointSourceCount * byteStride, 0, meshUpdateFlags);
+      pcMesh.SetVertexBufferData(frame.vertexBufferRaw, 0, 0, pointSourceCount * SourceByteStride, 0, meshUpdateFlags);
       pcMesh.SetSubMesh(0, new SubMeshDescriptor(0, pointSourceCount, MeshTopology.Points), meshUpdateFlags);
       pcMesh.bounds = configuration.GetBounds();
 

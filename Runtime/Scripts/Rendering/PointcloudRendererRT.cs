@@ -1,27 +1,14 @@
-using BuildingVolumes.Player;
-using System.Collections;
-using System.Collections.Generic;
-using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Rendering;
 
 namespace BuildingVolumes.Player
 {
-
-  public class PointcloudRendererRT : MonoBehaviour, IPointCloudRenderer
+  /// <summary>
+  /// Draws the cloud as one quad mesh sized for the whole sequence, each quad reading its point out
+  /// of the render textures the base class fills.
+  /// </summary>
+  public class PointcloudRendererRT : PointcloudRendererRTBase
   {
-    ComputeShader computeShaderRT;
-    RenderTexture rtPositions;
-    RenderTexture rtNormals;
-    RenderTexture rtColors;
-    int rtResolution;
-
-    //Triple buffering neccessary, as not all dispatches are guranteed
-    //to perform in one frame
-    GraphicsBuffer[] pointSourceBuffers = new GraphicsBuffer[3];
-    int bufferIndex = 0;
-
-    GameObject pcObject;
     MeshFilter pcMeshFilter;
     MeshRenderer pcMeshRenderer;
 
@@ -33,122 +20,16 @@ namespace BuildingVolumes.Player
     Bounds sequenceBounds;
     int visiblePointCount = -1;
 
-    Material currentPointcloudMaterial;
-    float currentPointSize = 0;
-    float currentPointEmission = 1;
+    protected override string StreamObjectName => "PointcloudRenderer";
+    protected override string ComputeShaderResourcePath => "ShaderGraph/Pointcloud_Shadergraph";
 
-    bool ready = true;
-    bool isDisposed;
-
-    //Compute shader property IDs
-    static readonly int pointSourceBufferID = Shader.PropertyToID("_PointSourceBuffer");
-    static readonly int pointSourceStrideID = Shader.PropertyToID("_SourceStride");
-    static readonly int pointCountID = Shader.PropertyToID("_PointCount");
-    static readonly int rtPositionsID = Shader.PropertyToID("_RTPositions");
-    static readonly int rtColorsID = Shader.PropertyToID("_RTColors");
-    static readonly int rtNormalsID = Shader.PropertyToID("_RTNormals");
-    static readonly int rtStrideID = Shader.PropertyToID("_RTStride");
-    static readonly int rtNormalsEnabledID = Shader.PropertyToID("_RTHasNormals");
-
-    //Vertex/Fragment shader property IDs
-    static readonly int rtResolutionID = Shader.PropertyToID("_RTResolution");
-    static readonly int rtPositionSourceID = Shader.PropertyToID("_PositionSourceRT");
-    static readonly int rtNormalSourceID = Shader.PropertyToID("_NormalSourceRT");
-    static readonly int rtColorSourceID = Shader.PropertyToID("_ColorSourceRT");
-    static readonly int pointScaleID = Shader.PropertyToID("_PointScale");
-    static readonly int pointEmissionID = Shader.PropertyToID("_PointEmission");
-
-    /// <summary>
-    /// Prepare all the buffers for a pointcloud sequence. Only needs to bet set once per sequence
-    /// </summary>
-    /// <param name="maxPointCount">The maximum number of points that could appear in any frame of the sequence</param>
-    /// <param name="meshFilter">The meshfilter where the point geometry data will be rendered into</param>
-    /// <param name="meshRenderer">The meshrenderer used for rendering the points. Will be auto-configured</param>
-    public void Setup(SequenceConfiguration configuration, Transform parent, float pointSize, float pointEmission, Material pointMaterial, bool instantiateMaterial)
+    protected override void CreateGeometry(SequenceConfiguration config)
     {
-      Dispose();
+      sequenceBounds = config.GetBounds();
 
-      ready = true;
-      isDisposed = false;
+      Mesh mesh = CreateStreamMesh(out pcMeshFilter, out pcMeshRenderer);
 
-      if (computeShaderRT == null)
-        computeShaderRT = Resources.Load("ShaderGraph/Pointcloud_Shadergraph", typeof(ComputeShader)) as ComputeShader;
-
-      //Calculate a square shaped texture in which all point data will fit
-      rtResolution = Mathf.CeilToInt(Mathf.Sqrt(configuration.maxVertexCount));
-
-      //Render Texture for storing point positions
-      rtPositions = new RenderTexture(rtResolution, rtResolution, 0, UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat);
-      rtPositions.enableRandomWrite = true;
-      rtPositions.filterMode = FilterMode.Point;
-      rtPositions.Create();
-
-      //Render texture for storing colors
-      rtColors = new RenderTexture(rtResolution, rtResolution, 0, UnityEngine.Experimental.Rendering.GraphicsFormat.R8G8B8A8_UNorm);
-      rtColors.enableRandomWrite = true;
-      rtColors.filterMode = FilterMode.Point;
-      rtColors.Create();
-
-      //Optional Render Texture for storing normals
-      if (configuration.hasNormals)
-      {
-        rtNormals = new RenderTexture(rtResolution, rtResolution, 0, UnityEngine.Experimental.Rendering.GraphicsFormat.R16G16B16A16_SFloat);
-        rtNormals.enableRandomWrite = true;
-        rtNormals.filterMode = FilterMode.Point;
-        rtNormals.Create();
-      }
-
-      //Create the buffer where all the raw point data will be stored
-      int textureSize = rtPositions.width * rtPositions.height;
-      int stride = configuration.hasNormals ? 4 * 7 : 4 * 4;
-
-      for (int i = 0; i < pointSourceBuffers.Length; i++)
-      {
-        pointSourceBuffers[i] = new GraphicsBuffer(GraphicsBuffer.Target.Raw, GraphicsBuffer.UsageFlags.LockBufferForWrite, textureSize, stride);
-      }
-
-      int kernel = configuration.hasNormals ? 1 : 0;
-      computeShaderRT.SetInt(rtStrideID, rtResolution);
-      computeShaderRT.SetInt(pointSourceStrideID, stride);
-      computeShaderRT.SetBool(rtNormalsEnabledID, configuration.hasNormals);
-      computeShaderRT.SetTexture(kernel, rtPositionsID, rtPositions);
-      computeShaderRT.SetTexture(kernel, rtColorsID, rtColors);
-      if (configuration.hasNormals)
-        computeShaderRT.SetTexture(kernel, rtNormalsID, rtNormals);
-
-      //Create the pointcloud mesh with n points
-      pcObject = MeshCreation(configuration, parent);
-
-      SetPointcloudMaterial(pointMaterial, pointSize, pointEmission, instantiateMaterial, configuration.hasNormals);
-
-    }
-
-    /// <summary>
-    /// On Polyspatial, mesh creation is a relatively expensive process
-    /// We therefore need to slowly create the mesh over multiple frames
-    /// and also distribute the mesh over multiple Meshfilters.
-    /// Otherwise, we risk fatal crashes where the AVP needs to restart
-    /// </summary>
-    GameObject MeshCreation(SequenceConfiguration config, Transform parent)
-    {
-      //Setup the rendering object
-      GameObject pcObject = CreateStreamObject("PointcloudRenderer", parent);
-
-      pcMeshFilter = pcObject.GetComponent<MeshFilter>();
-      if (pcMeshFilter == null)
-        pcMeshFilter = pcObject.AddComponent<MeshFilter>();
-
-      pcMeshRenderer = pcObject.GetComponent<MeshRenderer>();
-      if (pcMeshRenderer == null)
-        pcMeshRenderer = pcObject.AddComponent<MeshRenderer>();
-
-      pcMeshFilter.hideFlags = HideFlags.HideAndDontSave;
-      pcMeshRenderer.hideFlags = HideFlags.HideAndDontSave;
-
-
-      //Create a mesh that we use to render the pointcloud
       //The mesh consists out of simple quads, which we define here
-
       int quadCount = config.maxVertexCount;
 
       Vector3 vertice1 = new Vector3(-0.5f, 0.5f, 0f);
@@ -162,8 +43,6 @@ namespace BuildingVolumes.Player
       Vector2 uv2 = new Vector2(1, 1);
       Vector2 uv3 = new Vector2(1, 0);
       Vector2 uv4 = new Vector2(0, 0);
-
-      Mesh mesh = new Mesh();
 
       Vector3[] vertices = new Vector3[quadCount * 4];
       Vector3[] normals = new Vector3[1];
@@ -203,8 +82,6 @@ namespace BuildingVolumes.Player
       //Important, as we often deal with more than 16000 triangles
       mesh.indexFormat = IndexFormat.UInt32;
 
-      sequenceBounds = config.GetBounds();
-
       mesh.vertices = vertices;
       mesh.triangles = indices;
       mesh.SetUVs(0, uvs);
@@ -213,13 +90,21 @@ namespace BuildingVolumes.Player
       if (config.hasNormals)
         mesh.normals = normals;
 
-      pcMeshFilter.sharedMesh = mesh;
+      RegisterRenderer(pcMeshRenderer);
 
       //Nothing is drawn until the first frame arrives: the point data render textures hold stale
       //data until then, and the opaque default material has no alpha clip to hide it.
       SetVisiblePointCount(0);
+    }
 
-      return pcObject;
+    protected override int PrepareUpload(int pointCount)
+    {
+      SetVisiblePointCount(pointCount);
+
+      //Only the rows this frame's points reach need uploading. The rows past them keep stale data,
+      //which is harmless because the draw was just clamped to the same point count. Derived from
+      //visiblePointCount rather than the argument: that one is the clamped value.
+      return Mathf.CeilToInt(visiblePointCount / (float)rtResolution);
     }
 
     /// <summary>
@@ -269,197 +154,28 @@ namespace BuildingVolumes.Player
         pcMeshRenderer.localBounds = sequenceBounds;
     }
 
-
-    /// <summary>
-    /// Update the pointcloud data in the sequence with a new pointcloud frame.
-    /// </summary>
-    /// <param name="pointSource">A native buffer of points with their colors and positions</param>
-    /// <param name="pointCount">The number of points in the current frame</param>
-    public void SetFrame(Frame frame)
+    protected override Material LoadDefaultMaterial()
     {
-      if (!ready || isDisposed)
-        return;
+      //Alpha-clipped circles, not the opaque squares this path briefly defaulted to. Dropping the
+      //clip does hand occlusion back to the hardware - a discard disables hidden surface removal on
+      //Apple's tile-based GPUs - but it costs round points, and point shape is not negotiable.
+      string path = configuration.hasNormals
+        ? "ShaderGraph/Pointcloud_Circles_Lit_Shadergraph"
+        : "ShaderGraph/Pointcloud_Circles_Shadergraph";
 
-      bufferIndex++;
-      if (bufferIndex >= 3)
-        bufferIndex = 0;
+      Material mat = Resources.Load(path, typeof(Material)) as Material;
 
-      frame.geoJobHandle.Complete();
-      frame.decompressionJobHandle.Complete();
-      NativeArray<byte> pointdataGPU = pointSourceBuffers[bufferIndex].LockBufferForWrite<byte>(0, frame.geoJob.vertexBuffer.Length); //Locking buffer is faster than GraphicsBuffer.SetData;
-      frame.geoJob.vertexBuffer.CopyTo(pointdataGPU);
-      pointSourceBuffers[bufferIndex].UnlockBufferAfterWrite<byte>(frame.geoJob.vertexBuffer.Length);
-      computeShaderRT.SetInt(pointCountID, frame.geoJob.vertexCount);
+      if (mat == null)
+        Debug.LogError("Could not load default pointcloud material at Resources/" + path);
 
-      SetVisiblePointCount(frame.geoJob.vertexCount);
-
-      //Only dispatch over the render texture rows this frame's points reach. The rows past them keep
-      //stale data, which is harmless because the draw is clamped to the same point count.
-      int usedRows = Mathf.CeilToInt(visiblePointCount / (float)rtResolution);
-      int groupSizeX = Mathf.CeilToInt(rtPositions.width / 32f);
-      int groupSizeY = Mathf.Max(1, Mathf.CeilToInt(usedRows / 32f));
-      int kernel = frame.sequenceConfiguration.hasNormals ? 1 : 0;
-      computeShaderRT.SetBuffer(kernel, pointSourceBufferID, pointSourceBuffers[bufferIndex]);
-      computeShaderRT.Dispatch(kernel, groupSizeX, groupSizeY, 1);
+      return mat;
     }
 
-
-    public void SetPointcloudMaterial(Material mat, bool instantiateMaterial)
+    public override void Dispose()
     {
-      SetPointcloudMaterial(mat, currentPointSize, currentPointEmission, instantiateMaterial);
-    }
-
-    public void SetPointcloudMaterial(Material mat, float pointSize, float pointEmission, bool instantiateMaterial)
-    {
-      SetPointcloudMaterial(mat, pointSize, pointEmission, instantiateMaterial, false);
-    }
-
-    public void SetPointcloudMaterial(Material mat, float pointSize, float pointEmission, bool instantiateMaterial, bool hasNormals = false)
-    {
-      if (isDisposed || !pcMeshRenderer)
-        return;
-
-      if (!mat)
-        mat = LoadDefaultMaterial(hasNormals);
-
-      currentPointcloudMaterial = mat;
-      currentPointSize = pointSize;
-      currentPointEmission = pointEmission;
-
-      Material newMat;
-
-      if (instantiateMaterial)
-        newMat = new Material(mat);
-      else
-        newMat = mat;
-      newMat.SetFloat(rtResolutionID, rtResolution);
-      newMat.SetTexture(rtPositionSourceID, rtPositions);
-      newMat.SetTexture(rtColorSourceID, rtColors);
-      if (hasNormals)
-        newMat.SetTexture(rtNormalSourceID, rtNormals);
-
-      if (newMat.HasFloat(pointScaleID))
-        newMat.SetFloat(pointScaleID, pointSize);
-
-      if (newMat.HasFloat(pointEmissionID))
-        newMat.SetFloat(pointEmissionID, pointEmission);
-
-      if (pcMeshRenderer != null)
-        pcMeshRenderer.sharedMaterial = newMat;
-    }
-
-    public void Show()
-    {
-      if (isDisposed || !pcMeshRenderer)
-        return;
-
-      pcMeshRenderer.enabled = true;
-    }
-
-    public void Hide()
-    {
-      if (isDisposed || !pcMeshRenderer)
-        return;
-
-      pcMeshRenderer.enabled = false;
-    }
-
-    GameObject CreateStreamObject(string name, Transform parent)
-    {
-      GameObject newStreamObject = new GameObject(name);
-      newStreamObject.transform.parent = parent;
-      newStreamObject.transform.localPosition = Vector3.zero;
-      newStreamObject.transform.localRotation = Quaternion.identity;
-      newStreamObject.transform.localScale = Vector3.one;
-      newStreamObject.hideFlags = HideFlags.DontSave;
-      return newStreamObject;
-    }
-
-    public Material LoadDefaultMaterial(bool hasNormals)
-    {
-      if (hasNormals)
-      {
-        Material litMat = new Material(Resources.Load("ShaderGraph/Pointcloud_Circles_Lit_Shadergraph", typeof(Material)) as Material);
-
-        if (litMat == null)
-          UnityEngine.Debug.LogError("Pointcloud Circles Lit material could not be loaded!");
-
-        return litMat;
-      }
-
-      //Opaque squares rather than alpha-clipped circles. A discard disables hidden surface removal on
-      //Apple's tile-based GPUs, so every point occluded by the front of the capture still gets shaded;
-      //dropping the clip hands that occlusion back to the hardware. This is the Quads graph with its
-      //alpha clip switched off - derived from the graph that works rather than reimplementing the
-      //billboard vertex logic by hand. Assign a circle material through
-      //GeometrySequenceStream.customMaterial to trade the occlusion win back for round points.
-      Material opaqueMat = Resources.Load("ShaderGraph/Pointcloud_Quads_Opaque_Shadergraph", typeof(Material)) as Material;
-
-      if (opaqueMat == null)
-      {
-        UnityEngine.Debug.LogError("Pointcloud Quads Opaque material could not be loaded, falling back to alpha-clipped circles!");
-        return new Material(Resources.Load("ShaderGraph/Pointcloud_Circles_Shadergraph", typeof(Material)) as Material);
-      }
-
-      return new Material(opaqueMat);
-    }
-
-    public void SetPointSize(float size)
-    {
-      if (isDisposed || !pcMeshRenderer)
-        return;
-
-      if (pcMeshRenderer.sharedMaterial.HasFloat(pointScaleID))
-        pcMeshRenderer.sharedMaterial.SetFloat(pointScaleID, size);
-
-      currentPointSize = size;
-    }
-
-    public void SetPointEmission(float emission)
-    {
-      if (isDisposed || !pcMeshRenderer)
-        return;
-
-      if (pcMeshRenderer.sharedMaterial.HasFloat(pointEmissionID))
-        pcMeshRenderer.sharedMaterial.SetFloat(pointEmissionID, emission);
-
-      currentPointEmission = emission;
-    }
-
-    public void Dispose()
-    {
-      if (rtPositions != null)
-        DestroyImmediate(rtPositions);
-      if (rtColors != null)
-        DestroyImmediate(rtColors);
-      if (rtNormals != null)
-        DestroyImmediate(rtNormals);
-      for (int i = 0; i < pointSourceBuffers.Length; i++)
-      {
-        if (pointSourceBuffers[i] != null)
-          pointSourceBuffers[i].Dispose();
-      }
-
-      //Destroying pcObject only takes the MeshFilter with it, not the mesh it points at. The mesh is
-      //built per sequence and owned solely by this renderer, and at maxVertexCount * 4 vertices it is
-      //far too big to leave to the GC - in the editor ThumbnailLoadHelper re-runs Setup on every
-      //domain reload, so one is stranded per recompile.
-      if (pcMeshFilter != null && pcMeshFilter.sharedMesh != null)
-        DestroyImmediate(pcMeshFilter.sharedMesh);
-
-      if (pcObject != null)
-        DestroyImmediate(pcObject);
-
       visiblePointCount = -1;
 
-      isDisposed = true;
+      base.Dispose();
     }
-
-    public bool IsDisposed()
-    {
-      return isDisposed;
-    }
-
   }
-
 }

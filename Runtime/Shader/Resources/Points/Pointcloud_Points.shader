@@ -1,6 +1,6 @@
 // Shared URP point shader for pointcloud sequences rendered as MeshTopology.Points.
 // Each point is a GPU point primitive whose pixel size is derived from a world-space diameter
-// (_PointSize, scaled by the object's world scale), so points scale with distance and with the
+// (_PointScale, scaled by the object's world scale), so points scale with distance and with the
 // object transform like the billboard renderers do - but without the quad geometry or the per-frame
 // compute pass. Used by PointcloudRendererPoints, via the shared default material at
 // Resources/Points/Pointcloud_Points.
@@ -21,7 +21,7 @@ Shader "Pointclouds/Pointcloud_Points"
 {
     Properties
     {
-        _PointSize("Point Size (world units)", Range(0.0001, 1.0)) = 0.02
+        _PointScale("Point Size (world units)", Range(0.0001, 1.0)) = 0.02
         _Emission("Emission Strength", Range(0.0, 10.0)) = 1.0
     }
     SubShader
@@ -56,7 +56,7 @@ Shader "Pointclouds/Pointcloud_Points"
         };
 
         CBUFFER_START(UnityPerMaterial)
-            float _PointSize;
+            float _PointScale;
             float _Emission;
         CBUFFER_END
 
@@ -72,7 +72,7 @@ Shader "Pointclouds/Pointcloud_Points"
             OUT.positionCS = positions.positionCS;
             OUT.color = IN.color;
 
-            // Fold in the object's world scale so _PointSize tracks the object transform like the
+            // Fold in the object's world scale so _PointScale tracks the object transform like the
             // quad-based paths (Legacy/Shadergraph), whose point geometry lives in object space and
             // rides the object->world matrix. Uniform scale assumed (matches those paths); take it
             // from one basis vector of the model matrix.
@@ -82,8 +82,8 @@ Shader "Pointclouds/Pointcloud_Points"
             // pixels = worldDiameter * (viewportHeight * 0.5 * P[1][1]) / clipW
             // abs() on _m11: Unity flips clip-space Y (negative _m11) when rendering to the game
             // view / a RenderTexture on Metal & D3D. Without abs(), positive sizes go negative and
-            // get clamped to 1px while only negative _PointSize renders large.
-            float pixels = _PointSize * objScale * _ScreenParams.y * 0.5 * abs(UNITY_MATRIX_P._m11) / max(OUT.positionCS.w, 1e-5);
+            // get clamped to 1px while only negative _PointScale renders large.
+            float pixels = _PointScale * objScale * _ScreenParams.y * 0.5 * abs(UNITY_MATRIX_P._m11) / max(OUT.positionCS.w, 1e-5);
             OUT.size = max(pixels, 1.0);
             OUT.pixelRadius = OUT.size * 0.5;
 

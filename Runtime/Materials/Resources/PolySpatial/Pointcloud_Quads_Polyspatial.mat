@@ -67,7 +67,7 @@ Material:
     - _QueueOffset: 0
     - _RTResolution: 1
     - _VertexIDOffset: 0
-    - _pointEmission: 1
+    - _Emission: 1
     m_Colors: []
   m_BuildTextureStacks: []
   m_AllowLocking: 1
