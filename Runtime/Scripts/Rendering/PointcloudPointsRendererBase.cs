@@ -43,7 +43,7 @@ namespace BuildingVolumes.Player
 
       this.configuration = configuration;
 
-      pcObject = CreateStreamObject(StreamObjectName);
+      pcObject = CreateStreamObject(StreamObjectName, parent);
 
       pcMeshFilter = pcObject.GetComponent<MeshFilter>();
       if (pcMeshFilter == null)
@@ -97,10 +97,10 @@ namespace BuildingVolumes.Player
         pointcloudMaterial.SetFloat(emissionID, emission);
     }
 
-    GameObject CreateStreamObject(string name)
+    GameObject CreateStreamObject(string name, Transform parent)
     {
       GameObject newStreamObject = new GameObject(name);
-      newStreamObject.transform.parent = this.transform;
+      newStreamObject.transform.parent = parent;
       newStreamObject.transform.localPosition = Vector3.zero;
       newStreamObject.transform.localRotation = Quaternion.identity;
       newStreamObject.transform.localScale = Vector3.one;

@@ -117,7 +117,7 @@ namespace BuildingVolumes.Player
         computeShaderRT.SetTexture(kernel, rtNormalsID, rtNormals);
 
       //Create the pointcloud mesh with n points
-      pcObject = MeshCreation(configuration);
+      pcObject = MeshCreation(configuration, parent);
 
       SetPointcloudMaterial(pointMaterial, pointSize, pointEmission, instantiateMaterial, configuration.hasNormals);
 
@@ -129,10 +129,10 @@ namespace BuildingVolumes.Player
     /// and also distribute the mesh over multiple Meshfilters.
     /// Otherwise, we risk fatal crashes where the AVP needs to restart
     /// </summary>
-    GameObject MeshCreation(SequenceConfiguration config)
+    GameObject MeshCreation(SequenceConfiguration config, Transform parent)
     {
       //Setup the rendering object
-      GameObject pcObject = CreateStreamObject("PointcloudRenderer", this.transform);
+      GameObject pcObject = CreateStreamObject("PointcloudRenderer", parent);
 
       pcMeshFilter = pcObject.GetComponent<MeshFilter>();
       if (pcMeshFilter == null)
@@ -367,7 +367,7 @@ namespace BuildingVolumes.Player
     GameObject CreateStreamObject(string name, Transform parent)
     {
       GameObject newStreamObject = new GameObject(name);
-      newStreamObject.transform.parent = this.transform;
+      newStreamObject.transform.parent = parent;
       newStreamObject.transform.localPosition = Vector3.zero;
       newStreamObject.transform.localRotation = Quaternion.identity;
       newStreamObject.transform.localScale = Vector3.one;
