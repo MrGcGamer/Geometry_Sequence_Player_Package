@@ -23,6 +23,14 @@ Shader "Pointclouds/Pointcloud_Points"
     {
         _PointScale("Point Size (world units)", Range(0.0001, 1.0)) = 0.02
         _Emission("Emission Strength", Range(0.0, 10.0)) = 1.0
+        _Alpha("Opacity", Range(0.0, 1.0)) = 1.0
+
+        // Written by PointcloudRendererPoints.ApplyOpacity to switch the whole pass between the
+        // opaque default and alpha blending, the way URP's own Lit shader does it. A duplicate
+        // shader would be the alternative; the Shader Graph paths need one only because surface
+        // type is baked into the graph asset and cannot be driven from a material.
+        [HideInInspector] _SrcBlend("__src", Float) = 1.0
+        [HideInInspector] _DstBlend("__dst", Float) = 0.0
     }
     SubShader
     {
@@ -58,6 +66,7 @@ Shader "Pointclouds/Pointcloud_Points"
         CBUFFER_START(UnityPerMaterial)
             float _PointScale;
             float _Emission;
+            float _Alpha;
         CBUFFER_END
 
         Varyings vert (Attributes IN)
@@ -129,6 +138,21 @@ Shader "Pointclouds/Pointcloud_Points"
             Name "Unlit"
             Tags { "LightMode"="UniversalForward" }
 
+            // Opaque by default (One/Zero, ZWrite On); the renderer rewrites the colour factors for
+            // the Blended opacity mode.
+            //
+            // The alpha factors are fixed at One/OneMinusSrcAlpha rather than following the colour
+            // ones. Destination alpha is what visionOS composites the frame against passthrough
+            // with, and it has to end up equal to the opacity: SrcAlpha/OneMinusSrcAlpha on alpha
+            // squares it (0.5 opacity writes 0.25), which composites the cloud far too bright
+            // against passthrough while looking correct on an opaque background. At opacity 1 this
+            // still writes 1, so the opaque path is unchanged.
+            Blend [_SrcBlend] [_DstBlend], One OneMinusSrcAlpha
+
+            // On even while blending, deliberately - see PointcloudRendererBase.ApplyMaterialDrivenOpacity
+            // for why an unsorted cloud needs the depth write that a transparent shader normally drops.
+            ZWrite On
+
             HLSLPROGRAM
             #pragma vertex vert
             #pragma fragment frag
@@ -141,7 +165,9 @@ Shader "Pointclouds/Pointcloud_Points"
                 if (PointOutsideCircle(IN))
                     discard;
 
-                half4 col = IN.color * _Emission;
+                // _Emission scales colour only. It used to multiply the alpha too, which was
+                // harmless while nothing read the alpha and wrong the moment _Alpha arrived.
+                half4 col = half4(IN.color.rgb * _Emission, _Alpha);
                 col.rgb = MixFog(col.rgb, IN.fogCoord);
                 return col;
             }

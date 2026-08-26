@@ -40,6 +40,9 @@ namespace BuildingVolumes.Player
         public PointcloudRenderPath pointRenderPath = PointcloudRenderPath.PolySpatial;
         public float pointSize = 0.02f;
         public float pointEmission = 1f;
+        // Initialised to 1 so a scene saved before opacity existed deserialises to exactly what it
+        // used to look like: the field is absent from its YAML and takes this value.
+        public float pointOpacity = 1f;
 
         // Sequences are authored around sequence.json's boundsCenter, not the origin, so content may sit
         // off this GameObject's pivot and rotate/scale around a point outside it. When enabled, renderers
@@ -352,7 +355,7 @@ namespace BuildingVolumes.Player
             }
 
             (pcRenderer as Component).hideFlags = HideFlags.DontSave;
-            pcRenderer.Setup(reader.sequenceConfig, GetContentRoot(reader.sequenceConfig), pointSize, pointEmission, customMaterial, instantiateMaterial);
+            pcRenderer.Setup(reader.sequenceConfig, GetContentRoot(reader.sequenceConfig), GetRenderSettings());
 
             return pcRenderer;
         }
@@ -404,6 +407,39 @@ namespace BuildingVolumes.Player
             thumbnailPCRenderer?.SetPointEmission(pointEmission);
         }
 
+        /// <summary>
+        /// Sets a uniform opacity over the whole sequence, pointcloud or mesh. This is a global
+        /// multiplier, not per-point alpha from the sequence data - the source colours carry no
+        /// usable alpha channel.
+        /// </summary>
+        /// <param name="opacity">0 (invisible) to 1 (as before). Values outside are clamped.</param>
+        public void SetOpacity(float opacity)
+        {
+            pointOpacity = Mathf.Clamp01(opacity);
+
+            pointcloudRenderer?.SetOpacity(pointOpacity);
+            thumbnailPCRenderer?.SetOpacity(pointOpacity);
+
+            meshSequenceRenderer?.SetOpacity(pointOpacity);
+            thumbnailMeshRenderer?.SetOpacity(pointOpacity);
+        }
+
+        /// <summary>
+        /// The appearance state a renderer should be built in. Read at Setup time only; later edits
+        /// go through the SetX methods above so both the playback and the thumbnail renderer follow.
+        /// </summary>
+        PointcloudRenderSettings GetRenderSettings()
+        {
+            return new PointcloudRenderSettings
+            {
+                pointSize = pointSize,
+                emission = pointEmission,
+                opacity = Mathf.Clamp01(pointOpacity),
+                material = customMaterial,
+                instantiateMaterial = instantiateMaterial
+            };
+        }
+
 
         public void SetMaterial(Material mat)
         {
@@ -420,9 +456,87 @@ namespace BuildingVolumes.Player
             thumbnailMeshRenderer?.ChangeMaterial(mat, instantiate);
         }
 
+        /// <summary>
+        /// Switches render path, rebuilding the renderer in place when a sequence is already open.
+        /// </summary>
+        /// <remarks>
+        /// The reader, its ring buffer and the playback clock are all left alone: only the renderer
+        /// is torn down and replaced, so switching costs one frame of setup rather than a reopen and
+        /// a rebuffer. Called before <see cref="ChangeSequence"/>, it just records the choice.
+        ///
+        /// A path is never validated here - <see cref="SetupPointcloudRenderer"/> already falls back
+        /// where the packages a path needs are absent, and this is the only place that knows.
+        /// </remarks>
         public void SetRenderingPath(PointcloudRenderPath renderPath)
         {
+            bool changed = renderPath != pointRenderPath;
             pointRenderPath = renderPath;
+
+            if (!changed || !readerInitialized || bufferedReader == null)
+                return;
+
+            RebuildRenderer();
+        }
+
+        /// <summary>
+        /// Replaces the live renderer with one built for the current <see cref="pointRenderPath"/>.
+        /// </summary>
+        /// <remarks>
+        /// The old component is destroyed rather than merely disposed. Every render path adds its
+        /// renderer to this same GameObject, so leaving the previous one attached would keep a second
+        /// disposed component running its own Update alongside the new one.
+        ///
+        /// DestroyImmediate, not Destroy: a deferred destroy leaves the outgoing component alive for
+        /// the rest of the frame, and both would be given the frame pushed below.
+        /// </remarks>
+        void RebuildRenderer()
+        {
+            bool isPointcloud = bufferedReader.sequenceConfig.geometryType == SequenceConfiguration.GeometryType.Point;
+
+            if (isPointcloud)
+            {
+                pointcloudRenderer?.Dispose();
+                DestroyRenderer(pointcloudRenderer as Component);
+                pointcloudRenderer = SetupPointcloudRenderer(bufferedReader, pointRenderPath);
+            }
+
+            else
+            {
+                meshSequenceRenderer?.Dispose();
+                DestroyRenderer(meshSequenceRenderer as Component);
+                meshSequenceRenderer = SetupMeshSequenceRenderer(bufferedReader, pointRenderPath);
+            }
+
+            //The pointcloud path takes its appearance from GetRenderSettings at Setup; the mesh path
+            //has no equivalent, so opacity is pushed back in for both here.
+            SetOpacity(pointOpacity);
+
+            ShowCurrentFrameAgain();
+        }
+
+        static void DestroyRenderer(Component renderer)
+        {
+            if (renderer != null)
+                DestroyImmediate(renderer);
+        }
+
+        /// <summary>
+        /// Pushes the frame already on screen into a freshly built renderer, so a mid-playback swap
+        /// does not blank the sequence until the clock reaches the next frame.
+        /// </summary>
+        /// <remarks>
+        /// Only a frame in <see cref="BufferState.Playing"/> qualifies: any other state means its
+        /// buffers are still being written into. The single-frame path needs no help - it re-reads
+        /// and re-shows its one frame on every <see cref="UpdateFrame"/> anyway.
+        /// </remarks>
+        void ShowCurrentFrameAgain()
+        {
+            if (lastFrameBufferIndex < 0 || bufferedReader.frameBuffer == null)
+                return;
+
+            Frame current = bufferedReader.frameBuffer[lastFrameBufferIndex];
+            if (current != null && current.bufferState == BufferState.Playing)
+                ShowFrame(current);
         }
 
         public void ShowSequence()

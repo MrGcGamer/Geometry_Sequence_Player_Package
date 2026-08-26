@@ -11,6 +11,7 @@ namespace BuildingVolumes.Player
     GameObject streamedMeshObject;
     MeshFilter streamedMeshFilter;
     MeshRenderer streamedMeshRenderer;
+    float currentOpacity = 1f;
     Texture2D streamedMeshTexture;
 
     Material meshMaterial;
@@ -180,6 +181,10 @@ namespace BuildingVolumes.Player
         newMat = material;
 
       ApplyTextureToMaterial(newMat, streamedMeshTexture, properties, customProperties);
+
+      //Re-applied on every material change, so a material swapped in mid-playback comes up at the
+      //opacity already in force rather than fully opaque.
+      MeshOpacity.Apply(newMat, currentOpacity, this);
       streamedMeshRenderer.sharedMaterial = newMat;
       meshMaterial = newMat;
     }
@@ -231,17 +236,36 @@ namespace BuildingVolumes.Player
       streamedMeshRenderer.enabled = false;
     }
 
+    /// <summary>
+    /// URP Lit/Unlit, not the built-in-pipeline Standard and Unlit-Texture these used to be.
+    /// </summary>
+    /// <remarks>
+    /// Two reasons, and the first is not about opacity at all: a built-in-pipeline shader has no
+    /// DepthOnly pass, so with the renderer's Depth Priming Mode set to anything but Disabled it
+    /// renders <em>nothing</em>, silently - URP primes depth from that pass and then draws opaques
+    /// ZTest Equal. The second is that fading needs material-driven blend state, which URP's shaders
+    /// expose and Standard's `_Mode` juggling does not.
+    ///
+    /// The albedo slot survives the swap without special-casing because
+    /// <see cref="ApplyTextureToMaterial"/> assigns <c>mat.mainTexture</c> rather than "_MainTex" by
+    /// name, and that resolves to whichever property the shader marks as its main texture - _BaseMap
+    /// here. _EmissionMap and _DetailAlbedoMap exist on URP Lit under the same names.
+    /// </remarks>
     Material LoadDefaultMaterials(bool hasNormals)
     {
-      Material defaultMaterial;
+      string path = hasNormals ? "Mesh/Mesh_Lit" : "Mesh/Mesh_Unlit";
+      Material defaultMaterial = Resources.Load(path, typeof(Material)) as Material;
 
-      if(hasNormals)
-        defaultMaterial = Resources.Load("Legacy/Mesh_Lit_Legacy", typeof(Material)) as Material;
-      else
-        defaultMaterial = Resources.Load("Legacy/Mesh_Unlit_Legacy", typeof(Material)) as Material;
+      if (!defaultMaterial)
+        Debug.LogError("Could not load the default mesh material at Resources/" + path);
 
       return defaultMaterial;
+    }
 
+    public void SetOpacity(float opacity)
+    {
+      currentOpacity = Mathf.Clamp01(opacity);
+      MeshOpacity.Apply(streamedMeshRenderer != null ? streamedMeshRenderer.sharedMaterial : null, currentOpacity, this);
     }
 
     public void Dispose()

@@ -23,11 +23,18 @@ namespace BuildingVolumes.Player
     GraphicsBuffer[] pointSourceBuffers;
     int bufferIndex;
 
+    //Enough of the last upload to repeat it. Opacity reaches the graph through the colour texture,
+    //so changing it has to rewrite that texture; waiting for the next frame would leave a paused or
+    //thumbnailed cloud showing the old value.
+    int lastPointCount;
+    int lastGroupSizeY;
+
     //Compute shader property IDs
     static readonly int rtPositionsID = Shader.PropertyToID("_RTPositions");
     static readonly int rtColorsID = Shader.PropertyToID("_RTColors");
     static readonly int rtNormalsID = Shader.PropertyToID("_RTNormals");
     static readonly int rtStrideID = Shader.PropertyToID("_RTStride");
+
 
     //Vertex/Fragment shader property IDs
     static readonly int rtResolutionID = Shader.PropertyToID("_RTResolution");
@@ -125,12 +132,38 @@ namespace BuildingVolumes.Player
 
       int pointCount = frame.geoJob.vertexCount;
 
-      computeShaderRT.SetInt(pointCountID, pointCount);
       computeShaderRT.SetBuffer(kernel, pointSourceBufferID, pointSourceBuffer);
 
-      int groupSizeX = Mathf.CeilToInt(rtResolution / 32f);
-      int groupSizeY = Mathf.Max(1, Mathf.CeilToInt(PrepareUpload(pointCount) / 32f));
-      computeShaderRT.Dispatch(kernel, groupSizeX, groupSizeY, 1);
+      lastPointCount = pointCount;
+      lastGroupSizeY = Mathf.Max(1, Mathf.CeilToInt(PrepareUpload(pointCount) / 32f));
+
+      Upload();
+    }
+
+    /// <summary>
+    /// Run the unpack kernel over the buffer that is currently bound, writing the render textures
+    /// the material samples.
+    /// </summary>
+    /// <remarks>
+    /// The per-dispatch uniforms are re-set every time rather than once at setup, because the
+    /// compute shader is the shared Resources asset, not a copy: a second stream on the same render
+    /// path writes its own values into it between one of our dispatches and the next.
+    /// </remarks>
+    void Upload()
+    {
+      computeShaderRT.SetInt(pointCountID, lastPointCount);
+      computeShaderRT.SetInt(rtStrideID, rtResolution);
+      computeShaderRT.SetInt(sourceStrideID, SourceByteStride);
+      //Deliberately 1, not currentOpacity: the graphs clip the circle out of each quad against a
+      //fixed 0.5 threshold on this very channel, so anything less takes the cloud apart. See
+      //ApplyOpacity.
+      computeShaderRT.SetFloat(alphaID, 1f);
+      computeShaderRT.SetTexture(kernel, rtPositionsID, rtPositions);
+      computeShaderRT.SetTexture(kernel, rtColorsID, rtColors);
+      if (rtNormals != null)
+        computeShaderRT.SetTexture(kernel, rtNormalsID, rtNormals);
+
+      computeShaderRT.Dispatch(kernel, Mathf.CeilToInt(rtResolution / 32f), lastGroupSizeY, 1);
 
       OnFrameUploaded();
     }
@@ -141,18 +174,54 @@ namespace BuildingVolumes.Player
     /// and it returns how many rows of the render textures the dispatch has to write. The textures
     /// hold one point per texel, filled row by row, so one row is rtResolution points.
     ///
-    /// The default writes every row. That is what a path needs when its geometry always draws every
-    /// quad it owns, as the meshlet path does: any row still holding the previous frame's points
-    /// would otherwise show up as leftover points on screen.
+    /// The default writes every row, which is what a path needs when its geometry always draws every
+    /// quad it owns: any row still holding the previous frame's points would otherwise show up as
+    /// leftover points on screen.
     ///
-    /// A path that shrinks its draw down to <paramref name="pointCount"/> can write only the rows
-    /// those points reach and let the rest go stale, because nothing reads them. Returning that row
-    /// count from the same call is what keeps it in step with the clamp the override just applied.
+    /// A path that shrinks its draw can write only the rows the drawn geometry reaches and let the
+    /// rest go stale, because nothing reads them. Returning that row count from the same call is what
+    /// keeps it in step with the clamp the override just applied - and the rows have to cover the
+    /// geometry that is still drawn, which is not the same as covering <paramref name="pointCount"/>
+    /// when the clamp is coarser than one point.
     /// </summary>
     protected virtual int PrepareUpload(int pointCount) => rtResolution;
 
     /// <summary>Called after the upload dispatch, for platforms that have to be told the textures changed.</summary>
     protected virtual void OnFrameUploaded() { }
+
+    /// <summary>
+    /// Opacity is not applied on these paths yet. The material is left in its opaque, alpha-clipped
+    /// state and the compute shader keeps writing a fully opaque colour texture, so the render is
+    /// exactly what it has always been; a request below 1 warns instead of half-working.
+    /// </summary>
+    /// <remarks>
+    /// The graphs cannot fade without a change inside them, and it is a one-node change. Their Alpha
+    /// is <c>colourRT.a x circleMask</c>, and the circle exists only because the Alpha Clip Threshold
+    /// discards everything under 0.5 - the mask is a soft, distance-like value, not a binary one, so
+    /// without the clip each point draws as a soft square and the cloud turns into a colourless white
+    /// haze. Measured: correct down to opacity 0.55, gone entirely at 0.45, because the threshold is
+    /// a constant 0.5 baked into the graph rather than a material property.
+    ///
+    /// So this one channel cannot carry both the fade and a clip against a fixed threshold. The fix is
+    /// to make the threshold scale with the opacity: feed <c>0.5 x opacity</c> into the Alpha Clip
+    /// Threshold block. The test then reduces to <c>mask > 0.5</c> - the same circle at every opacity -
+    /// while the blend alpha stays equal to the opacity. One property and one multiply per graph.
+    /// </remarks>
+    protected override void ApplyOpacity(int rendererIndex)
+    {
+      Material mat = GetMaterial(rendererIndex);
+
+      if (mat == null || currentOpacity >= 1f || warnedAboutGraphOpacity)
+        return;
+
+      warnedAboutGraphOpacity = true;
+      Debug.LogWarning("The " + GetType().Name + " render path cannot fade yet: '" + mat.shader.name +
+        "' derives its round points from an alpha clip at a fixed 0.5 threshold, which the opacity would " +
+        "have to pass through. Use the Points render path for a fadeable cloud. See " +
+        nameof(PointcloudRendererRTBase) + ".ApplyOpacity for the graph change that lifts this.", this);
+    }
+
+    bool warnedAboutGraphOpacity;
 
     protected override void ConfigureMaterial(Material mat, int rendererIndex)
     {

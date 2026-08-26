@@ -9,6 +9,7 @@ namespace BuildingVolumes.Player
     public void RenderFrame(Frame frame);
     public void ApplySingleTexture(Frame frame);
     public void ChangeMaterial(Material material, bool instantiateMaterial);
+    public void SetOpacity(float opacity);
     public void ChangeMaterial(Material material, GeometrySequenceStream.MaterialProperties properties, List<string> customProperties, bool instantiateMaterial);
     public void Show();
     public void Hide();

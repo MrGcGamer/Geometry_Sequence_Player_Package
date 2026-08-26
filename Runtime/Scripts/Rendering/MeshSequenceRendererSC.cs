@@ -11,6 +11,7 @@ namespace BuildingVolumes.Player
     List<MeshFilter> streamedMeshFilters = new List<MeshFilter>();
     List<MeshRenderer> streamedMeshRenderers = new List<MeshRenderer>();
     List<Texture2D> streamedMeshTextures = new List<Texture2D>();
+    float currentOpacity = 1f;
 
     Material meshMaterial;
     bool textured;
@@ -222,6 +223,7 @@ namespace BuildingVolumes.Player
           newMat = material;
 
         ApplyTextureToMaterial(newMat, streamedMeshTextures[i], properties, customProperties);
+        MeshOpacity.Apply(newMat, currentOpacity, this);
         streamedMeshRenderers[i].sharedMaterial = newMat;
       }
     }
@@ -279,6 +281,22 @@ namespace BuildingVolumes.Player
     {
       Material newMat = Resources.Load("ShaderGraph/Unlit_Mesh", typeof(Material)) as Material;
       return newMat;
+    }
+
+    /// <remarks>
+    /// The default here is the Unlit_Mesh graph, whose only properties are _MainTex and _UV_Tiling:
+    /// its Alpha output is a constant, so there is nothing for an opacity to scale. Giving this path
+    /// opacity means adding an alpha input inside the graph, which is node editing rather than the
+    /// one settings flag the pointcloud graphs needed. Until then MeshOpacity warns, naming the
+    /// shader, instead of leaving the slider silently inert.
+    /// </remarks>
+    public void SetOpacity(float opacity)
+    {
+      currentOpacity = Mathf.Clamp01(opacity);
+
+      for (int i = 0; i < streamedMeshRenderers.Count; i++)
+        if (streamedMeshRenderers[i] != null)
+          MeshOpacity.Apply(streamedMeshRenderers[i].sharedMaterial, currentOpacity, this);
     }
 
     public void Dispose()

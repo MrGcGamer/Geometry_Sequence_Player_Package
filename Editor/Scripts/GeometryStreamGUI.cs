@@ -18,6 +18,7 @@ namespace BuildingVolumes.Player
     SerializedProperty customMaterialSlots;
     SerializedProperty pointSize;
     SerializedProperty pointEmission;
+    SerializedProperty pointOpacity;
     SerializedProperty pointSystem;
     SerializedProperty centerContentOnOrigin;
 
@@ -48,6 +49,7 @@ namespace BuildingVolumes.Player
       customMaterialSlots = serializedObject.FindProperty("customMaterialSlots");
       pointSize = serializedObject.FindProperty("pointSize");
       pointEmission = serializedObject.FindProperty("pointEmission");
+      pointOpacity = serializedObject.FindProperty("pointOpacity");
       pointSystem = serializedObject.FindProperty("pointRenderPath");
       centerContentOnOrigin = serializedObject.FindProperty("centerContentOnOrigin");
 
@@ -114,6 +116,16 @@ namespace BuildingVolumes.Player
       EditorGUILayout.PropertyField(pointEmission);
       if (EditorGUI.EndChangeCheck())
         stream.SetPointEmission(pointEmission.floatValue);
+
+      EditorGUI.BeginChangeCheck();
+      EditorGUILayout.Slider(pointOpacity, 0f, 1f, new GUIContent("Opacity", "Uniform opacity over the whole sequence. Not per-point alpha - the sequence data carries none."));
+      if (EditorGUI.EndChangeCheck())
+        stream.SetOpacity(pointOpacity.floatValue);
+
+      //Shown only when it applies, so the default look carries no warning about something that is
+      //not happening.
+      if (pointOpacity.floatValue < 1f)
+        EditorGUILayout.HelpBox("Below 1 the cloud is alpha blended. Points are not sorted, so a point hidden behind another can still tint it; nothing disappears, but expect some colour bleed where the cloud overlaps itself.", MessageType.Info);
 
       GUILayout.Space(10);
 

@@ -134,6 +134,21 @@ namespace BuildingVolumes.Player
       mat.SetFloat(rtVertexOffsetID, rendererIndex * meshletQuadCount * 4);
     }
 
+    protected override int PrepareUpload(int pointCount)
+    {
+      //Every meshlet draws the same shared prefab mesh, so the draw cannot be clamped per meshlet
+      //the way the single-mesh path clamps its submesh. Whole meshlets are switched off instead,
+      //which is why the saving lands on meshlet granularity rather than on the exact point count.
+      int drawnMeshlets = Mathf.CeilToInt(pointCount / (float)meshletQuadCount);
+      SetDrawnRendererCount(drawnMeshlets);
+
+      //Counted to the end of the last drawn meshlet, not to pointCount: that meshlet still draws its
+      //full quad count, and the compute pass has to reach the texels past the frame's points to zero
+      //their alpha. Stopping at pointCount would leave the previous frame's points showing there.
+      int coveredPoints = Mathf.Min(drawnMeshlets * meshletQuadCount, rtResolution * rtResolution);
+      return Mathf.CeilToInt(coveredPoints / (float)rtResolution);
+    }
+
     protected override void OnFrameUploaded()
     {
 #if UNITY_VISIONOS && INCLUDE_UNITY_POLYSPATIAL

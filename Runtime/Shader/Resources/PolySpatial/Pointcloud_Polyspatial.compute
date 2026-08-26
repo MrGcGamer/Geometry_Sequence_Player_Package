@@ -8,6 +8,13 @@ ByteAddressBuffer _PointSourceBuffer;
 int _PointCount;
 int _RTStride;
 
+//Uniform opacity for the whole cloud, 0..1. Written into the colour RT's alpha instead of a hard 1,
+//because that channel is what the Shader Graph feeds to its Alpha output: with the graph clipping at
+//0.5 it doubles as the point-validity flag (the unused tail of the texture gets 0 and is discarded),
+//and with the clip switched off it becomes the blend weight. One channel, both jobs - which is why
+//the renderer must not drop below 0.5 here while the material is still opaque and clipping.
+float _Alpha;
+
 float4 GetPositionFromPointSourceBuffer(int id)
 {
     //We access the raw vertex buffer of the mesh vertices. As this buffer is raw, we don't have a handy struct to navigate it
@@ -30,7 +37,9 @@ float4 GetColorFromPointSourceBuffer(int id)
     int colorUInt = _PointSourceBuffer.Load(pointIndex);
     
     //The color is stored as four bytes in a 32-bit int. We unpack this int here and convert the values to float values.
-    float4 rgba = float4(0.0, 0.0, 0.0, 1.0);
+    //The alpha carries the cloud's opacity, and must stay above the graph's 0.5 clip threshold while
+    //the material is opaque - otherwise every point is discarded, valid or not.
+    float4 rgba = float4(0.0, 0.0, 0.0, _Alpha);
     rgba.r = float((colorUInt) & 0xff) / 255.0;
     rgba.b = float((colorUInt >> 16) & 0xff) / 255.0;
     rgba.g = float((colorUInt >> 8) & 0xff) / 255.0;

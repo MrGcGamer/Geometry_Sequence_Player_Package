@@ -38,6 +38,15 @@ namespace BuildingVolumes.Player
     /// </summary>
     protected virtual void ConfigureMesh(SequenceConfiguration config) { }
 
+    /// <summary>
+    /// Pointcloud_Points carries both opacity modes itself, so the shared material-driven path
+    /// applies here; Geometry is the queue its tags declare.
+    /// </summary>
+    protected override void ApplyOpacity(int rendererIndex)
+    {
+      ApplyMaterialDrivenOpacity(rendererIndex, RenderQueue.Geometry);
+    }
+
     protected override Material LoadDefaultMaterial()
     {
       Material mat = Resources.Load(defaultMaterialResourcePath, typeof(Material)) as Material;

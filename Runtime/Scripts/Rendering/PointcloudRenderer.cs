@@ -208,6 +208,21 @@ namespace BuildingVolumes.Player
     /// </summary>
     protected override void ApplyPointSize(int rendererIndex) { }
 
+    /// <summary>
+    /// The legacy quad shaders carry the opacity themselves, like the point-primitive one.
+    /// AlphaTest, not Geometry, is the queue their tags declare.
+    /// </summary>
+    /// <remarks>
+    /// Pointcloud_Circle_Lit, loaded instead when a sequence has normals, is a surface shader: making
+    /// it fade needs <c>alpha:fade</c>, which puts it in the transparent queue permanently and so
+    /// costs something at full opacity too. Left alone deliberately - the base warns once, naming the
+    /// shader, rather than the slider quietly doing nothing.
+    /// </remarks>
+    protected override void ApplyOpacity(int rendererIndex)
+    {
+      ApplyMaterialDrivenOpacity(rendererIndex, RenderQueue.AlphaTest);
+    }
+
     protected override Material LoadDefaultMaterial()
     {
       Material mat;

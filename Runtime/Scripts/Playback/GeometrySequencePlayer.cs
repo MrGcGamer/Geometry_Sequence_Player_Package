@@ -283,6 +283,21 @@ namespace BuildingVolumes.Player
         }
 
         /// <summary>
+        /// Sets a uniform opacity over the whole sequence, taking effect immediately.
+        /// This is a global multiplier, not per-point alpha from the sequence data.
+        /// </summary>
+        /// <param name="opacity">0 (invisible) to 1 (fully opaque). Values outside are clamped.</param>
+        public void SetOpacity(float opacity)
+        {
+            //Guarded because a script may set this on a component it has just added, before
+            //SetupGeometryStream has run.
+            if (stream == null)
+                return;
+
+            stream.SetOpacity(opacity);
+        }
+
+        /// <summary>
         /// Set the render path for pointclouds. Render path will only change once the
         /// sequence is also being changed or loaded
         /// </summary>

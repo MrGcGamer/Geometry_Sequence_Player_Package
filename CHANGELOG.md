@@ -19,7 +19,12 @@ This version adds Draco-compressed pointcloud playback and a new lightweight poi
 
 - **Draco Compression:** Pointcloud sequences can now be played back from Draco-compressed `.drc` files. Draco frames are decoded asynchronously ahead of playback. Draco support is optional and feature-gated: install the `com.unity.cloud.draco` package via the Package Manager to enable it (the player works without it for non-Draco sequences).
 - **Draco Export:** The Converter tool can now export pointclouds to Draco `.drc` files (via DracoPy).
-- **Points Render Path:** A new "Points" pointcloud render path draws one vertex per point using `MeshTopology.Points`, without the billboard quad or compute pass used by the other paths. Draco sequences always use this points-based renderer.
+- **Points Render Path:** A new "Points" pointcloud render path draws one vertex per point using `MeshTopology.Points`, without the billboard quad or compute pass used by the other paths.
+- **Opacity:** A sequence can be faded with one `0…1` value, from the inspector or through `GeometrySequencePlayer.SetOpacity()`. Below 1 the sequence is alpha blended; at 1 it renders exactly as before, so existing scenes are unaffected. Supported on the `Points` and `Legacy` pointcloud paths and on mesh sequences. Not yet on the `Shadergraph` and `PolySpatial` pointcloud paths, or on mesh sequences under PolySpatial — those warn instead of fading.
+
+Fixes:
+
+- Pointcloud and mesh sequences drawn with the built-in-pipeline shaders (`Legacy` paths, and the default mesh materials) rendered nothing at all when the active URP Renderer had Depth Priming enabled. The legacy pointcloud shaders now carry the `DepthOnly` pass URP primes from, and mesh sequences default to URP Lit/Unlit materials instead of the built-in `Standard` and `Unlit/Texture`.
 
 ⬇️ Please also update the Geometry Sequence Player package to the newest version!
 
